@@ -1,0 +1,29 @@
+# Virtual Environment
+backend/venv/
+venv/
+ENV/
+env/
+
+# Node Modules
+node_modules/
+frontend/node_modules/
+
+# Compiled files
+**/__pycache__/
+*.pyc
+frontend/dist/
+frontend/out-tsc/
+frontend/.angular/
+
+# Logs
+*.log
+frontend/build.log
+
+# IDEs
+.vscode/
+.idea/
+.history/
+
+# OS files
+.DS_Store
+Thumbs.db
