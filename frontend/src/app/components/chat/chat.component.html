@@ -1,0 +1,621 @@
+<!-- FILE PATH: src/app/components/chat/chat.component.html -->
+<div class="app-shell">
+
+  <!-- ── NAVBAR ── -->
+  <nav class="navbar">
+    <div class="nav-brand">
+      <div class="brand-dot"></div>
+      <span class="brand-name">Tetranetics</span>
+      <span class="brand-divider">|</span>
+      <span class="brand-sub">AI Call Coach</span>
+    </div>
+    <div class="nav-right">
+      <span class="nav-badge" *ngIf="scenario && !resolved">
+        <span class="badge-dot"></span> Live Session
+      </span>
+      <span class="nav-badge" *ngIf="resolved" style="background:#EBF9F1;color:#2EA055;">
+        <span class="badge-dot" style="background:#3DBE6E"></span> Session Complete
+      </span>
+
+      <!-- Difficulty selector -->
+      <div class="difficulty-selector">
+        <span class="diff-selector-label">Difficulty</span>
+        <div class="diff-btn-group">
+          <button *ngFor="let lvl of difficultyLevels" class="diff-btn" [class.active]="selectedDifficulty === lvl"
+            (click)="setDifficulty(lvl)" [disabled]="loading" [title]="difficultyLabel(lvl)">{{ lvl }}</button>
+        </div>
+      </div>
+
+      <!-- NEW: Redo Conversation button — visible during active session -->
+      <button class="btn-redo" *ngIf="scenario && messages.length > 0 && !resolved && !failed && !showReport"
+        (click)="redoConversation()" [disabled]="loading"
+        title="Restart this conversation from the beginning with the same scenario">
+        🔄 Redo
+      </button>
+
+      <button class="btn-new" (click)="newSession()" [disabled]="loading && !showReport">New Session</button>
+    </div>
+  </nav>
+
+  <!-- ── SCENARIO BANNER — visible during session and after resolution (not on report page) ── -->
+  <div class="scenario-banner" *ngIf="scenario && !showReport">
+    <div class="scenario-info">
+      <span class="scenario-tag">SCENARIO</span>
+      <span class="scenario-persona">{{ scenario.customer_persona }}</span>
+      <span class="scenario-sep">·</span>
+      <span class="scenario-issue">{{ scenario.issue_type }}</span>
+    </div>
+    <div class="mood-meter">
+      <div class="mood-score-row">
+        <div class="score-badge" [class.high]="currentMood >= 7" [class.mid]="currentMood >= 4 && currentMood < 7"
+          [class.low]="currentMood < 4">
+          <span class="score-num">{{ currentMood }}</span>
+          <span class="score-denom">/10</span>
+        </div>
+        <div class="score-right">
+          <div class="score-label">Customer Mood — {{ currentMoodLabel }}</div>
+          <div class="score-track">
+            <div class="score-fill" [style.width.%]="moodBarWidth(currentMood)" [class.high]="currentMood >= 7"
+              [class.mid]="currentMood >= 4 && currentMood < 7" [class.low]="currentMood < 4">
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="scenario-diff">
+      <span class="diff-label">{{ difficultyLabel(selectedDifficulty) }}</span>
+      <div class="diff-pips">
+        <span *ngFor="let p of difficultyLevels" [class.active]="p <= selectedDifficulty"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── ERROR BANNER ── -->
+  <div class="error-banner" *ngIf="error">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="8" x2="12" y2="12" />
+      <line x1="12" y1="16" x2="12.01" y2="16" />
+    </svg>
+    {{ error }}
+  </div>
+
+  <!-- ── MAIN LAYOUT ── -->
+  <div class="main-layout">
+
+    <!-- ═══ CHAT PANEL — always visible unless showing full report ═══ -->
+    <ng-container *ngIf="!showReport && !failed">
+      <div class="chat-panel">
+
+        <!-- Connecting state -->
+        <div class="connecting" *ngIf="loading && messages.length === 0 && !generatingScenario">
+          <div class="connecting-inner">
+            <div class="pulse-ring"></div>
+            <div class="pulse-core"></div>
+          </div>
+          <p class="connecting-title">Initializing AI Session</p>
+          <p class="connecting-sub">Connecting to backend · Loading scenario</p>
+        </div>
+
+        <!-- Message list -->
+        <div class="message-list" #scrollContainer>
+
+          <!-- Welcome card -->
+          <div class="welcome-card" *ngIf="scenario && messages.length === 0 && !loading">
+            <div class="welcome-icon">📞</div>
+            <h3>Ready to Train</h3>
+            <p>You are speaking with a <strong>{{ scenario.customer_persona }}</strong> customer
+              experiencing a <strong>{{ scenario.issue_type }}</strong> issue.</p>
+            <p class="welcome-hint">Type your opening response below to begin the simulation.</p>
+
+            <!-- NEW: Generated scenario description (shown when scenario was LLM-generated) -->
+            <div class="generated-desc" *ngIf="generatedDescription">
+              <span class="generated-desc-tag">🎲 AI-Generated Scenario</span>
+              <p class="generated-desc-text">{{ generatedDescription }}</p>
+            </div>
+
+            <!-- NEW: Scenario Generator button -->
+            <div class="scenario-gen-section">
+              <div class="scenario-gen-buttons">
+                <button class="btn-generate-scenario" (click)="generateScenario()"
+                  [disabled]="generatingScenario || loading">
+                  <span *ngIf="!generatingScenario">🎲 Generate Random Scenario</span>
+                  <span *ngIf="generatingScenario" class="gen-loading">
+                    <span class="btn-spinner btn-spinner-dark"></span>
+                    Generating via LLM...
+                  </span>
+                </button>
+                <button class="btn-custom-scenario" (click)="toggleCustomForm()" [disabled]="loading">
+                  ✍️ Create Custom Scenario
+                </button>
+              </div>
+              <span class="scenario-gen-hint">Generate a random AI scenario or type your own</span>
+            </div>
+
+            <!-- NEW: Custom Scenario Form (toggled by button) -->
+            <div class="custom-scenario-form" *ngIf="showCustomForm">
+              <div class="custom-form-header">
+                <span class="custom-form-tag">✍️ Custom Scenario</span>
+                <button class="custom-form-close" (click)="showCustomForm = false">✕</button>
+              </div>
+              <div class="custom-form-field">
+                <label class="custom-label">Issue / Problem Title <span class="required">*</span></label>
+                <input class="custom-input" [(ngModel)]="customIssue"
+                  placeholder="e.g. Warranty Claim on Washing Machine" [disabled]="loading" />
+              </div>
+              <div class="custom-form-field">
+                <label class="custom-label">Customer Persona <span class="optional">(optional)</span></label>
+                <input class="custom-input" [(ngModel)]="customPersona"
+                  placeholder="e.g. Confused Senior, Angry & Yelling" [disabled]="loading" />
+              </div>
+              <div class="custom-form-field">
+                <label class="custom-label">Short Description <span class="optional">(optional)</span></label>
+                <input class="custom-input" [(ngModel)]="customDescription"
+                  placeholder="e.g. Customer bought a washing machine 10 months ago, spin cycle not working"
+                  [disabled]="loading" />
+              </div>
+              <button class="btn-start-custom" (click)="startCustomScenario()"
+                [disabled]="!customIssue.trim() || loading">
+                🚀 Start Custom Session
+              </button>
+            </div>
+          </div>
+
+          <!-- NEW: Generating scenario overlay (when generating before session starts) -->
+          <div class="generating-overlay" *ngIf="generatingScenario && messages.length === 0">
+            <div class="connecting-inner">
+              <div class="pulse-ring"></div>
+              <div class="pulse-core"></div>
+            </div>
+            <p class="connecting-title">Generating Unique Scenario</p>
+            <p class="connecting-sub">The LLM is creating a brand new scenario for you...</p>
+          </div>
+
+          <ng-container *ngFor="let m of messages; let i = index">
+
+            <!-- AGENT message -->
+            <div class="msg-row agent" *ngIf="m.role === 'agent'">
+              <div class="msg-block">
+                <div class="msg-label">You — Agent</div>
+
+                <!-- Normal display (not editing) -->
+                <ng-container *ngIf="!m.editing">
+                  <div class="msg-bubble agent-bubble">{{ m.text }}</div>
+                  <!-- NEW: Edit button — only show if session is active and not loading -->
+                  <button class="btn-edit-msg" *ngIf="!resolved && !failed && !loading" (click)="startEdit(i)"
+                    title="Edit this reply and regenerate the customer response">
+                    ✏️ Edit
+                  </button>
+                </ng-container>
+
+                <!-- NEW: Editing mode -->
+                <ng-container *ngIf="m.editing">
+                  <div class="edit-wrap">
+                    <textarea class="edit-textarea" [(ngModel)]="m.editText" (keydown.escape)="cancelEdit(i)" rows="3"
+                      placeholder="Edit your reply..."></textarea>
+                    <div class="edit-actions">
+                      <button class="btn-edit-save" (click)="submitEdit(i)" [disabled]="!m.editText?.trim()">
+                        Save &amp; Regenerate
+                      </button>
+                      <button class="btn-edit-cancel" (click)="cancelEdit(i)">Cancel</button>
+                    </div>
+                    <span class="edit-hint">All turns after this one will be removed and the customer response will be
+                      regenerated.</span>
+                  </div>
+                </ng-container>
+              </div>
+              <div class="msg-avatar agent-avatar">A</div>
+            </div>
+
+            <!-- CUSTOMER message + coaching card -->
+            <div class="msg-row customer" *ngIf="m.role === 'customer'">
+              <div class="msg-avatar customer-avatar">C</div>
+              <div class="msg-block">
+                <div class="msg-label">Customer</div>
+                <div class="msg-bubble customer-bubble">{{ m.text }}</div>
+
+                <!-- Coaching card -->
+                <div class="coaching-card" *ngIf="m.score !== undefined">
+                  <div class="coaching-score-row">
+                    <div class="score-badge" [class.high]="m.score! >= 7" [class.mid]="m.score! >= 4 && m.score! < 7"
+                      [class.low]="m.score! < 4">
+                      <span class="score-num">{{ m.score }}</span>
+                      <span class="score-denom">/10</span>
+                    </div>
+                    <div class="score-right">
+                      <div class="score-label">Empathy Score</div>
+                      <div class="score-track">
+                        <div class="score-fill" [style.width.%]="m.score! * 10" [class.high]="m.score! >= 7"
+                          [class.mid]="m.score! >= 4 && m.score! < 7" [class.low]="m.score! < 4">
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="score-reason" *ngIf="m.reason">
+                    <span class="reason-icon">📝</span>
+                    <span class="reason-text">{{ m.reason }}</span>
+                  </div>
+
+                  <div class="coaching-divider"></div>
+
+                  <div class="coaching-section">
+                    <div class="coaching-sec-head">
+                      <span class="sec-icon">💡</span>
+                      <span class="sec-title">Coaching Tip</span>
+                    </div>
+                    <p class="coaching-body">{{ m.tip }}</p>
+                  </div>
+
+                  <div class="coaching-divider"></div>
+
+                  <!-- Ideal responses — hidden by default, toggle with <details> -->
+                  <details class="ideal-details">
+                    <summary class="ideal-summary">
+                      <span class="ideal-summary-icon">🌟</span>
+                      <span class="ideal-summary-text">View Ideal Responses</span>
+                      <span class="ideal-summary-chevron">▼</span>
+                    </summary>
+
+                    <div class="ideal-details-body">
+                      <ng-container *ngIf="m.ideals; else singleIdeal">
+                        <div class="ideal-row">
+                          <div class="ideal-row-header">
+                            <span class="ideal-badge badge-pos">✅ Positive</span>
+                            <button class="btn-use-ideal btn-use-pos" (click)="agentInput = m.ideals!.positive">Use
+                              ↗</button>
+                          </div>
+                          <blockquote class="ideal-quote ideal-pos">{{ m.ideals!.positive }}</blockquote>
+                        </div>
+                        <div class="ideal-row">
+                          <div class="ideal-row-header">
+                            <span class="ideal-badge badge-neu">🔵 Neutral</span>
+                            <button class="btn-use-ideal btn-use-neu" (click)="agentInput = m.ideals!.neutral">Use
+                              ↗</button>
+                          </div>
+                          <blockquote class="ideal-quote ideal-neu">{{ m.ideals!.neutral }}</blockquote>
+                        </div>
+                        <div class="ideal-row">
+                          <div class="ideal-row-header">
+                            <span class="ideal-badge badge-neg">🟡 Negative</span>
+                            <button class="btn-use-ideal btn-use-neg" (click)="agentInput = m.ideals!.negative">Use
+                              ↗</button>
+                          </div>
+                          <blockquote class="ideal-quote ideal-neg">{{ m.ideals!.negative }}</blockquote>
+                        </div>
+                      </ng-container>
+
+                      <ng-template #singleIdeal>
+                        <blockquote class="ideal-quote">{{ m.ideal }}</blockquote>
+                        <button class="btn-use-ideal" (click)="agentInput = m.ideal!" *ngIf="m.ideal">Use ↗</button>
+                      </ng-template>
+                    </div>
+                  </details>
+                </div>
+              </div>
+            </div>
+
+          </ng-container>
+
+          <!-- Typing indicator -->
+          <div class="typing-row" *ngIf="loading && messages.length > 0">
+            <div class="msg-avatar customer-avatar">C</div>
+            <div class="typing-bubble"><span></span><span></span><span></span></div>
+            <span class="typing-label">{{ processingLabel || 'Processing...' }}</span>
+          </div>
+
+        </div><!-- /message-list -->
+
+        <!-- Input bar — hidden when resolved -->
+        <div class="input-bar" *ngIf="scenario && !resolved">
+          <div class="input-wrap">
+            <input [(ngModel)]="agentInput" (keydown.enter)="send()" placeholder="Type your response as the agent..."
+              [disabled]="loading" class="input-field" />
+            <button class="btn-send" (click)="send()" [disabled]="loading || !agentInput.trim()">
+              <svg *ngIf="!loading" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2.5">
+                <line x1="22" y1="2" x2="11" y2="13" />
+                <polygon points="22 2 15 22 11 13 2 9 22 2" />
+              </svg>
+              <div *ngIf="loading" class="btn-spinner"></div>
+            </button>
+          </div>
+          <div class="input-hint">
+            Press Enter to send ·
+            <span *ngIf="loading">{{ processingLabel }}</span>
+            <span *ngIf="!loading">Difficulty: {{ difficultyLabel(selectedDifficulty) }}</span>
+          </div>
+        </div>
+
+        <!-- ── Resolved banner with report button ── -->
+        <div class="resolved-banner" *ngIf="resolved && !showReport">
+          <span class="resolved-icon">🏆</span>
+          <div class="resolved-text">
+            <strong>Issue Resolved!</strong>
+            <span>Great work — the customer has been satisfied.</span>
+          </div>
+          <div class="resolved-actions">
+            <button class="btn-view-report" (click)="showReport = true" *ngIf="report && !reportLoading">
+              📊 View Report
+            </button>
+            <div class="report-inline-loading" *ngIf="reportLoading">
+              <div class="btn-spinner"
+                style="border-color:rgba(61,190,110,.3);border-top-color:#3DBE6E;width:14px;height:14px;"></div>
+              <span>Preparing report...</span>
+            </div>
+            <!-- NEW: Redo button on resolved banner -->
+            <button class="btn-redo" (click)="redoConversation()" [disabled]="loading"
+              title="Restart with the same scenario">🔄 Redo</button>
+            <button class="btn-resolved" (click)="newSession()">New Session</button>
+          </div>
+        </div>
+
+      </div><!-- /chat-panel -->
+    </ng-container>
+
+    <!-- ═══ FAILED PANEL ═══ -->
+    <ng-container *ngIf="failed && !resolved && !showReport">
+      <div class="chat-panel failed-page">
+
+        <!-- Animated skull -->
+        <div class="failed-skull-wrap">
+          <div class="failed-skull-ring ring-1"></div>
+          <div class="failed-skull-ring ring-2"></div>
+          <div class="failed-skull-ring ring-3"></div>
+          <div class="failed-skull-emoji">💀</div>
+        </div>
+
+        <!-- Title -->
+        <h2 class="failed-title">Session Failed</h2>
+        <p class="failed-subtitle">The customer disconnected. You ran out of time to de-escalate.</p>
+
+        <!-- Stats row -->
+        <div class="failed-stats" *ngIf="report && !reportLoading">
+          <div class="failed-stat-pill">
+            <span class="failed-pill-num"
+              [style.color]="report.average_score >= 7 ? '#3DBE6E' : report.average_score >= 4 ? '#F59E0B' : '#EF4444'">
+              {{ report.average_score }}/10
+            </span>
+            <span class="failed-pill-lbl">Avg Score</span>
+          </div>
+          <div class="failed-stat-pill">
+            <span class="failed-pill-num">{{ report.total_turns }}</span>
+            <span class="failed-pill-lbl">Turns Played</span>
+          </div>
+          <div class="failed-stat-pill">
+            <span class="failed-pill-num"
+              [style.color]="report.trend === 'improving' ? '#3DBE6E' : report.trend === 'declining' ? '#EF4444' : '#F59E0B'">
+              {{ report.trend | titlecase }}
+            </span>
+            <span class="failed-pill-lbl">Trend</span>
+          </div>
+          <div class="failed-stat-pill">
+            <span class="failed-pill-num" style="color:#EF4444;">❌ Failed</span>
+            <span class="failed-pill-lbl">Outcome</span>
+          </div>
+        </div>
+
+        <!-- Report loading -->
+        <div class="failed-report-loading" *ngIf="reportLoading">
+          <div class="btn-spinner"
+            style="border-color:rgba(239,68,68,.2);border-top-color:#EF4444;width:18px;height:18px;"></div>
+          <span>Analysing your session...</span>
+        </div>
+
+        <!-- Tips from the session -->
+        <div class="failed-tips" *ngIf="report && !reportLoading">
+          <div class="failed-tips-title">⚡ Key Areas to Work On</div>
+          <ul class="failed-tips-list">
+            <ng-container *ngFor="let m of messages">
+              <li *ngIf="m.role === 'customer' && m.tip" class="failed-tip-item">
+                {{ m.tip }}
+              </li>
+            </ng-container>
+          </ul>
+        </div>
+
+        <!-- Action buttons -->
+        <div class="failed-actions">
+          <!-- NEW: Redo button on failed page -->
+          <button class="btn-fail-redo" (click)="redoConversation()" [disabled]="loading">
+            🔄 Redo Same Scenario
+          </button>
+          <button class="btn-fail-primary" (click)="newSession()">
+            🔄 Try Again
+          </button>
+          <button class="btn-fail-report" (click)="showReport = true" *ngIf="report && !reportLoading">
+            📊 View Full Report
+          </button>
+        </div>
+
+      </div>
+    </ng-container>
+
+    <!-- ═══ REPORT PAGE — only when user clicks View Report ═══ -->
+    <ng-container *ngIf="showReport">
+      <div class="report-page">
+
+        <!-- ── LOADING STATE ── -->
+        <div class="report-loading-full" *ngIf="reportLoading">
+          <div class="connecting-inner">
+            <div class="pulse-ring"></div>
+            <div class="pulse-core"></div>
+          </div>
+          <p class="connecting-title">Generating your performance report...</p>
+          <p class="connecting-sub">This may take 30–60 seconds</p>
+        </div>
+
+        <!-- ── FULL REPORT ── -->
+        <div class="report-content-full" *ngIf="report && !reportLoading">
+
+          <!-- Back button -->
+          <div class="report-back-row">
+            <button class="btn-report-back" (click)="showReport = false">← Back</button>
+            <div class="report-back-actions">
+              <!-- NEW: Redo button on report page -->
+              <button class="btn-redo" (click)="redoConversation()" [disabled]="loading">🔄 Redo</button>
+              <button class="btn-action-primary" (click)="newSession()">🔄 New Session</button>
+            </div>
+          </div>
+
+          <!-- SECTION 1: Summary Card -->
+          <div class="report-summary-card">
+            <div class="report-summary-top">
+              <div class="report-summary-scenario">
+                <span class="scenario-tag" style="background:rgba(61,190,110,.2);color:#3DBE6E;">COMPLETED</span>
+                <span class="rpt-scenario-name">{{ scenario?.customer_persona }} · {{ scenario?.issue_type }}</span>
+              </div>
+              <div class="report-stat-row">
+                <div class="rpt-stat-pill">
+                  <span class="rpt-pill-num"
+                    [style.color]="report.average_score >= 7 ? '#3DBE6E' : report.average_score >= 4 ? '#F59E0B' : '#EF4444'">
+                    {{ report.average_score }}/10
+                  </span>
+                  <span class="rpt-pill-lbl">Avg Score</span>
+                </div>
+                <div class="rpt-stat-pill">
+                  <span class="rpt-pill-num">{{ report.total_turns }}</span>
+                  <span class="rpt-pill-lbl">Turns</span>
+                </div>
+                <div class="rpt-stat-pill">
+                  <span class="rpt-pill-num"
+                    [style.color]="report.trend === 'improving' ? '#3DBE6E' : report.trend === 'declining' ? '#EF4444' : '#F59E0B'">
+                    {{ report.trend | titlecase }}
+                  </span>
+                  <span class="rpt-pill-lbl">Trend</span>
+                </div>
+                <div class="rpt-stat-pill">
+                  <span class="rpt-pill-num" style="color:#3DBE6E;">✅ Resolved</span>
+                  <span class="rpt-pill-lbl">Outcome</span>
+                </div>
+              </div>
+            </div>
+            <div class="report-summary-text" *ngIf="report.report_text">
+              <p>{{ report.report_text }}</p>
+            </div>
+          </div>
+
+          <!-- SECTION 2: Score Timeline -->
+          <div class="report-section">
+            <div class="report-section-header">
+              <span class="report-section-title">📈 Score Timeline</span>
+              <span class="report-section-sub">How each turn performed</span>
+            </div>
+            <div class="score-timeline">
+              <ng-container *ngFor="let m of messages; let i = index">
+                <div class="score-bar-row" *ngIf="m.role === 'customer' && m.score !== undefined">
+                  <span class="score-bar-turn">T{{ i }}</span>
+                  <div class="score-bar-track">
+                    <div class="score-bar-fill" [style.width.%]="m.score! * 10" [class.high]="m.score! >= 7"
+                      [class.mid]="m.score! >= 4 && m.score! < 7" [class.low]="m.score! < 4">
+                    </div>
+                  </div>
+                  <span class="score-bar-num" [class.high]="m.score! >= 7" [class.mid]="m.score! >= 4 && m.score! < 7"
+                    [class.low]="m.score! < 4">{{ m.score }}/10</span>
+                  <div class="score-bar-agent" *ngIf="i > 0 && messages[i-1]?.role === 'agent'">
+                    "{{ messages[i-1].text | slice:0:70 }}{{ messages[i-1].text.length > 70 ? '...' : '' }}"
+                  </div>
+                </div>
+              </ng-container>
+            </div>
+          </div>
+
+          <!-- SECTION 3: Improvement Points -->
+          <div class="report-section">
+            <div class="report-section-header">
+              <span class="report-section-title">⚡ What To Improve</span>
+              <span class="report-section-sub">Coaching tips from each turn</span>
+            </div>
+            <ul class="improvement-list">
+              <ng-container *ngFor="let m of messages; let i = index">
+                <li class="improvement-item" *ngIf="m.role === 'customer' && m.tip && m.tip.length > 0">
+                  <div class="improvement-tip">{{ m.tip }}</div>
+                  <div class="improvement-turn" *ngIf="i > 0 && messages[i-1]?.role === 'agent'">
+                    Turn {{ i }} — you said:
+                    "{{ messages[i-1].text | slice:0:60 }}{{ messages[i-1].text.length > 60 ? '...' : '' }}"
+                  </div>
+                </li>
+              </ng-container>
+            </ul>
+          </div>
+
+          <!-- SECTION 4: Best and Worst Turn -->
+          <div class="report-section" *ngIf="report.best_turn && report.worst_turn">
+            <div class="report-section-header">
+              <span class="report-section-title">🏅 Turn Highlights</span>
+              <span class="report-section-sub">Your strongest and weakest moments</span>
+            </div>
+            <div class="turn-cards">
+              <div class="turn-card turn-best">
+                <div class="turn-card-label">
+                  <span class="turn-card-icon">🏆</span>
+                  Best Turn — Turn {{ report.best_turn.turn }}
+                </div>
+                <div class="turn-card-score high">{{ report.best_turn.score }}/10</div>
+                <blockquote class="turn-card-quote">"{{ report.best_turn.agent }}"</blockquote>
+              </div>
+              <div class="turn-card turn-worst">
+                <div class="turn-card-label">
+                  <span class="turn-card-icon">⚠️</span>
+                  Needs Work — Turn {{ report.worst_turn.turn }}
+                </div>
+                <div class="turn-card-score low">{{ report.worst_turn.score }}/10</div>
+                <blockquote class="turn-card-quote">"{{ report.worst_turn.agent }}"</blockquote>
+                <div class="turn-card-tip" *ngIf="report.worst_turn.tip">
+                  💡 {{ report.worst_turn.tip }}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- SECTION 5: Actions + Conversation Review -->
+          <div class="report-actions">
+            <button class="btn-redo" (click)="redoConversation()" [disabled]="loading">🔄 Redo Same Scenario</button>
+            <button class="btn-action-primary" (click)="newSession()">
+              🔄 Start New Session
+            </button>
+          </div>
+
+          <!-- Conversation Review — always visible below report -->
+          <div class="report-section report-convo-review">
+            <div class="report-section-header">
+              <span class="report-section-title">💬 Full Conversation</span>
+              <span class="report-section-sub">Review the complete session transcript</span>
+            </div>
+            <div class="convo-review-list">
+              <ng-container *ngFor="let m of messages">
+                <div class="convo-msg" [class.convo-agent]="m.role === 'agent'"
+                  [class.convo-customer]="m.role === 'customer'">
+                  <span class="convo-role">{{ m.role === 'agent' ? '🧑‍💼 You' : '🧑‍💻 Customer' }}</span>
+                  <span class="convo-text">{{ m.text }}</span>
+                  <span class="convo-score" *ngIf="m.role === 'customer' && m.score !== undefined"
+                    [class.high]="m.score >= 7" [class.mid]="m.score >= 4 && m.score < 7" [class.low]="m.score < 4">
+                    {{ m.score }}/10
+                  </span>
+                </div>
+              </ng-container>
+            </div>
+          </div>
+
+        </div><!-- /report-content-full -->
+      </div><!-- /report-page -->
+    </ng-container>
+
+    <!-- ═══ DEBUG LOG ═══ -->
+    <div class="log-panel">
+      <div class="log-header">
+        <div class="log-title">
+          <span class="log-dot" [class.active]="logs.length > 0"></span>
+          Debug Log
+        </div>
+        <button class="log-clear" (click)="clearLogs()">Clear</button>
+      </div>
+      <div class="log-body">
+        <div class="log-empty" *ngIf="logs.length === 0">Waiting for events...</div>
+        <div *ngFor="let l of logs" class="log-line" [class.log-ok]="l.includes('✅')" [class.log-err]="l.includes('❌')"
+          [class.log-req]="l.includes('📡')">{{ l }}</div>
+      </div>
+    </div>
+
+  </div><!-- /main-layout -->
+</div>
