@@ -7,7 +7,7 @@ import { Observable, throwError } from 'rxjs';
 import { catchError, timeout } from 'rxjs/operators';
 
 export interface WsMessage {
-  type: 'thinking' | 'result' | 'error' | 'pong' | 'edit_result' | 'redo';   // ← ADDED edit_result, redo
+  type: 'thinking' | 'result' | 'error' | 'pong' | 'edit_result' | 'redo' | 'ideals_update';   // ← ADDED ideals_update
   customer_reply?: string;
   score?: number;
   tip?: string;

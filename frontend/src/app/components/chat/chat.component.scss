@@ -2952,3 +2952,28 @@ $amber: #F59E0B;
     cursor: not-allowed;
   }
 }
+
+.btn-back-to-chat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  background: #010e07;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+}
+
+.btn-back-to-chat:hover {
+  background: #2563EB;
+  transform: translateY(-1px);
+}
+
+.btn-back-to-chat:active {
+  background: #1D4ED8;
+  transform: translateY(0);
+}

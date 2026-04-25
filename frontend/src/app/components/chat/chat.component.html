@@ -26,7 +26,7 @@
         </div>
       </div>
 
-      <!-- NEW: Redo Conversation button — visible during active session -->
+      <!-- Redo Conversation button — visible during active session -->
       <button class="btn-redo" *ngIf="scenario && messages.length > 0 && !resolved && !failed && !showReport"
         (click)="redoConversation()" [disabled]="loading"
         title="Restart this conversation from the beginning with the same scenario">
@@ -108,13 +108,13 @@
               experiencing a <strong>{{ scenario.issue_type }}</strong> issue.</p>
             <p class="welcome-hint">Type your opening response below to begin the simulation.</p>
 
-            <!-- NEW: Generated scenario description (shown when scenario was LLM-generated) -->
+            <!-- Generated scenario description -->
             <div class="generated-desc" *ngIf="generatedDescription">
               <span class="generated-desc-tag">🎲 AI-Generated Scenario</span>
               <p class="generated-desc-text">{{ generatedDescription }}</p>
             </div>
 
-            <!-- NEW: Scenario Generator button -->
+            <!-- Scenario Generator button -->
             <div class="scenario-gen-section">
               <div class="scenario-gen-buttons">
                 <button class="btn-generate-scenario" (click)="generateScenario()"
@@ -132,7 +132,7 @@
               <span class="scenario-gen-hint">Generate a random AI scenario or type your own</span>
             </div>
 
-            <!-- NEW: Custom Scenario Form (toggled by button) -->
+            <!-- Custom Scenario Form -->
             <div class="custom-scenario-form" *ngIf="showCustomForm">
               <div class="custom-form-header">
                 <span class="custom-form-tag">✍️ Custom Scenario</span>
@@ -161,7 +161,7 @@
             </div>
           </div>
 
-          <!-- NEW: Generating scenario overlay (when generating before session starts) -->
+          <!-- Generating scenario overlay -->
           <div class="generating-overlay" *ngIf="generatingScenario && messages.length === 0">
             <div class="connecting-inner">
               <div class="pulse-ring"></div>
@@ -181,14 +181,14 @@
                 <!-- Normal display (not editing) -->
                 <ng-container *ngIf="!m.editing">
                   <div class="msg-bubble agent-bubble">{{ m.text }}</div>
-                  <!-- NEW: Edit button — only show if session is active and not loading -->
+                  <!-- Edit button — only show if session is active and not loading -->
                   <button class="btn-edit-msg" *ngIf="!resolved && !failed && !loading" (click)="startEdit(i)"
                     title="Edit this reply and regenerate the customer response">
                     ✏️ Edit
                   </button>
                 </ng-container>
 
-                <!-- NEW: Editing mode -->
+                <!-- Editing mode -->
                 <ng-container *ngIf="m.editing">
                   <div class="edit-wrap">
                     <textarea class="edit-textarea" [(ngModel)]="m.editText" (keydown.escape)="cancelEdit(i)" rows="3"
@@ -249,7 +249,7 @@
 
                   <div class="coaching-divider"></div>
 
-                  <!-- Ideal responses — hidden by default, toggle with <details> -->
+                  <!-- Ideal responses -->
                   <details class="ideal-details">
                     <summary class="ideal-summary">
                       <span class="ideal-summary-icon">🌟</span>
@@ -343,7 +343,6 @@
                 style="border-color:rgba(61,190,110,.3);border-top-color:#3DBE6E;width:14px;height:14px;"></div>
               <span>Preparing report...</span>
             </div>
-            <!-- NEW: Redo button on resolved banner -->
             <button class="btn-redo" (click)="redoConversation()" [disabled]="loading"
               title="Restart with the same scenario">🔄 Redo</button>
             <button class="btn-resolved" (click)="newSession()">New Session</button>
@@ -416,7 +415,6 @@
 
         <!-- Action buttons -->
         <div class="failed-actions">
-          <!-- NEW: Redo button on failed page -->
           <button class="btn-fail-redo" (click)="redoConversation()" [disabled]="loading">
             🔄 Redo Same Scenario
           </button>
@@ -448,11 +446,10 @@
         <!-- ── FULL REPORT ── -->
         <div class="report-content-full" *ngIf="report && !reportLoading">
 
-          <!-- Back button -->
+          <!-- Back button row — with prominent "Back to Chat" button -->
           <div class="report-back-row">
-            <button class="btn-report-back" (click)="showReport = false">← Back</button>
+            <button class="btn-back-to-chat" (click)="backToChat()">💬 Back to Chat</button>
             <div class="report-back-actions">
-              <!-- NEW: Redo button on report page -->
               <button class="btn-redo" (click)="redoConversation()" [disabled]="loading">🔄 Redo</button>
               <button class="btn-action-primary" (click)="newSession()">🔄 New Session</button>
             </div>
@@ -568,8 +565,9 @@
             </div>
           </div>
 
-          <!-- SECTION 5: Actions + Conversation Review -->
+          <!-- SECTION 5: Actions -->
           <div class="report-actions">
+            <button class="btn-back-to-chat" (click)="backToChat()">💬 Back to Chat</button>
             <button class="btn-redo" (click)="redoConversation()" [disabled]="loading">🔄 Redo Same Scenario</button>
             <button class="btn-action-primary" (click)="newSession()">
               🔄 Start New Session

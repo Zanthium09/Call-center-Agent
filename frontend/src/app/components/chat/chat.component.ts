@@ -13,7 +13,7 @@ interface Message {
   score?: number; tip?: string; reason?: string;
   ideal?: string; ideals?: Ideals;
   mood?: number; moodLabel?: string; turnsLeft?: number;
-  editing?: boolean; editText?: string;                    // ← ADDED for edit feature
+  editing?: boolean; editText?: string;
 }
 
 @Component({
@@ -35,11 +35,11 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
   readonly difficultyLevels = [1, 2, 3, 4, 5];
   processingLabel = '';
 
-  // ── NEW: Feature 1 — Scenario Generator state ──
+  // ── Feature 1 — Scenario Generator state ──
   generatingScenario = false;
   generatedDescription = '';
 
-  // ── NEW: Feature 1b — Custom Scenario state ──
+  // ── Feature 1b — Custom Scenario state ──
   customIssue = '';
   customPersona = '';
   customDescription = '';
@@ -65,7 +65,7 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
     this.messages = []; this.resolved = false; this.failed = false;
     this.error = ''; this.report = null; this.reportLoading = false;
     this.showReport = false; this.failed = false;
-    this.generatedDescription = '';       // ← ADDED: clear on difficulty change
+    this.generatedDescription = '';
     this.startNewSession();
   }
 
@@ -89,7 +89,7 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
   }
   clearLogs() { this.logs = []; this.cdr.detectChanges(); }
 
-  // ── Mood helpers — use starting_mood from backend instead of hardcoding 3 ──
+  // ── Mood helpers ──
   _moodLabelFor(mood: number): string {
     if (mood >= 9) return 'Satisfied';
     if (mood >= 7) return 'Calming';
@@ -200,9 +200,6 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
         this.cdr.detectChanges();
         break;
 
-      // ══════════════════════════════════════════════════════════════════════
-      //  NEW — Feature 2: Handle edit_result from backend
-      // ══════════════════════════════════════════════════════════════════════
       case 'edit_result': {
         this.loading = false;
         this.processingLabel = '';
@@ -211,15 +208,12 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
 
         this.addLog(`✏️ Edit T${editedTurn} — Score: ${msg.score}/10 | Mood: ${msg.mood_label}`);
 
-        // Truncate: keep messages up to and including the edited agent message
         this.messages = this.messages.slice(0, agentIdx + 1);
-        // Clear editing state on the agent message
         if (this.messages[agentIdx]) {
           this.messages[agentIdx].editing = false;
           this.messages[agentIdx].editText = undefined;
         }
 
-        // Push fresh customer reply
         this.messages.push({
           role: 'customer', text: msg.customer_reply ?? '',
           score: msg.score, tip: msg.tip, reason: msg.reason,
@@ -231,7 +225,6 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
         this.currentMoodLabel = msg.mood_label ?? this.currentMoodLabel;
         this.turnsRemaining = msg.turns_remaining ?? this.turnsRemaining;
 
-        // Check win/loss on edited turn
         if (msg.resolved || msg.outcome === 'win') {
           this.resolved = true;
           this.addLog('🏆 Issue resolved (after edit)!');
@@ -260,13 +253,27 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
         break;
       }
 
-      // ══════════════════════════════════════════════════════════════════════
-      //  NEW — Feature 3: Handle redo acknowledgement from backend
-      // ══════════════════════════════════════════════════════════════════════
       case 'redo':
         this.addLog('🔄 Conversation restarted (same scenario)');
         this.cdr.detectChanges();
         break;
+
+      // ══════════════════════════════════════════════════════════════════════
+      //  NEW — Handle ideals_update: patch ideals into the last customer msg
+      // ══════════════════════════════════════════════════════════════════════
+      case 'ideals_update': {
+        // Find the last customer message and patch its ideals
+        for (let i = this.messages.length - 1; i >= 0; i--) {
+          if (this.messages[i].role === 'customer') {
+            this.messages[i].ideal = msg.ideal;
+            this.messages[i].ideals = msg.ideals as Ideals;
+            break;
+          }
+        }
+        this.addLog('🌟 Ideal responses loaded');
+        this.cdr.detectChanges();
+        break;
+      }
 
       case 'error':
         this.loading = false; this.processingLabel = '';
@@ -303,8 +310,8 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
     this.reportLoading = false; this.showReport = false; this.currentMood = 5;
     this.currentMoodLabel = 'Frustrated'; this.turnsRemaining = 20;
     this.processingLabel = '';
-    this.generatedDescription = '';     // ← ADDED: clear on new session
-    this.generatingScenario = false;    // ← ADDED
+    this.generatedDescription = '';
+    this.generatingScenario = false;
     this.customIssue = ''; this.customPersona = ''; this.customDescription = '';
     this.showCustomForm = false;
     this.cdr.detectChanges();
@@ -312,7 +319,7 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
   }
 
   // ════════════════════════════════════════════════════════════════════════════
-  //  NEW — Feature 1: Generate a random scenario via LLM
+  //  Feature 1: Generate a random scenario via LLM
   // ════════════════════════════════════════════════════════════════════════════
   generateScenario() {
     if (this.generatingScenario || this.loading) return;
@@ -325,7 +332,6 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
     this.coach.generateScenario(this.selectedDifficulty).subscribe({
       next: (res) => {
         this.zone.run(() => {
-          // Set session state from generated scenario
           this.sessionId = res.session_id;
           this.scenario = res.scenario;
           this.generatedDescription = res.short_description || '';
@@ -338,7 +344,6 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
           this.showReport = false;
           this.addLog(`🎲 Generated: ${res.scenario?.customer_persona} | ${res.scenario?.issue_type}`);
           this.cdr.detectChanges();
-          // Connect WebSocket for this new session
           this._connectWebSocket(res.session_id);
         });
       },
@@ -354,7 +359,7 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
   }
 
   // ════════════════════════════════════════════════════════════════════════════
-  //  NEW — Feature 1b: Start a user-defined custom scenario
+  //  Feature 1b: Start a user-defined custom scenario
   // ════════════════════════════════════════════════════════════════════════════
   toggleCustomForm() {
     this.showCustomForm = !this.showCustomForm;
@@ -405,13 +410,11 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
   }
 
   // ════════════════════════════════════════════════════════════════════════════
-  //  NEW — Feature 2: Edit a previously sent agent reply
+  //  Feature 2: Edit a previously sent agent reply
   // ════════════════════════════════════════════════════════════════════════════
   startEdit(index: number) {
     if (this.loading || this.resolved || this.failed) return;
-    // Cancel any other active edit
     this.messages.forEach(m => { m.editing = false; m.editText = undefined; });
-    // Enter edit mode for this message
     this.messages[index].editing = true;
     this.messages[index].editText = this.messages[index].text;
     this.cdr.detectChanges();
@@ -428,17 +431,14 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
     const newText = msg.editText?.trim();
     if (!newText || this.loading) return;
     if (newText === msg.text) {
-      // No change — just cancel
       this.cancelEdit(index);
       return;
     }
 
-    // Calculate turn number: agent messages are at even indices (0, 2, 4...)
     const turnNumber = Math.floor(index / 2) + 1;
 
     this.loading = true;
     this.processingLabel = `Re-evaluating turn ${turnNumber}...`;
-    // Update the displayed text immediately
     this.messages[index].text = newText;
     this.messages[index].editing = false;
     this.messages[index].editText = undefined;
@@ -461,7 +461,7 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
   }
 
   // ════════════════════════════════════════════════════════════════════════════
-  //  NEW — Feature 3: Redo conversation with the same scenario
+  //  Feature 3: Redo conversation with the same scenario
   // ════════════════════════════════════════════════════════════════════════════
   redoConversation() {
     if (!this.sessionId || this.loading) return;
@@ -474,7 +474,6 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
     this.coach.redoConversation(this.sessionId).subscribe({
       next: (res) => {
         this.zone.run(() => {
-          // Reset local state — keep scenario
           this.messages = [];
           this.resolved = false;
           this.failed = false;
@@ -489,7 +488,6 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
           this.generatedDescription = '';
           this.addLog('✅ Conversation restarted — same scenario, fresh start');
           this.cdr.detectChanges();
-          // WS stays connected (same session_id), no need to reconnect
         });
       },
       error: (err) => {
@@ -502,5 +500,14 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
         });
       }
     });
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  NEW — Feature 4: Back to Chat — navigate from report to chat view
+  // ════════════════════════════════════════════════════════════════════════════
+  backToChat() {
+    this.showReport = false;
+    this.addLog('💬 Returned to chat view');
+    this.cdr.detectChanges();
   }
 }

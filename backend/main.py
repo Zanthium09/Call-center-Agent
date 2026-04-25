@@ -19,6 +19,11 @@
 #           and inject last 2 positive outputs into the avoid pool
 #  [FIX-8] Ideal negative: max_tokens reduced 55→45, hard 1-sentence trim
 #  [FIX-9] Resolution bypass keywords tightened — no bare single words
+#  [FIX-10] All prompts changed from "phone call" to "chat conversation"
+#  [FIX-11] Customer system prompt rewritten — airtight anti-hallucination
+#  [FIX-12] Scorer prompt rewritten — requires specific reasons
+#  [FIX-13] Turn-1 fallback uses problem statement, not mood-based
+#  [FIX-14] Reason fallback is score-range-specific, not generic
 # ==============================================================================
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -37,7 +42,7 @@ app.add_middleware(
 # ── LM Studio ─────────────────────────────────────────────────────────────────
 LM_STUDIO_URL = os.environ.get("LM_STUDIO_URL", "http://127.0.0.1:1234")
 LM_API        = f"{LM_STUDIO_URL}/v1/chat/completions"
-model_id      = os.environ.get("LM_MODEL_ID", "google/gemma-4-e4b")
+model_id      = os.environ.get("LM_MODEL_ID", "qwen/qwen3-4b-instruct-2507")
 
 try:
     r = _http.get(f"{LM_STUDIO_URL}/v1/models", timeout=5)
@@ -161,179 +166,237 @@ db = ScenarioDB()
 
 
 # ==============================================================================
-#  SYSTEM PROMPT TEMPLATES
+#  SYSTEM PROMPT TEMPLATES  [FIX-10/11/12 — rewritten for chat, airtight]
 # ==============================================================================
 
 """
-Optimized prompts for phi-4-mini-instruct (4B, 8-bit quantized).
- 
-Design principles for small models:
-  • Max ~300 tokens per system prompt (phi-4-mini loses coherence beyond this)
-  • 5-7 rules max — prioritize the ones the model actually violates
+Optimized prompts for small-to-medium LLMs (4B–12B).
+
+Design principles:
+  • Max ~350 tokens per system prompt
+  • 5-8 rules max — prioritize the ones the model actually violates
   • Use short imperative sentences, not nested bullet trees
-  • Put the MOST IMPORTANT rule FIRST (primacy bias in small models)
-  • Avoid "do NOT" lists longer than 3 items — use positive framing instead
-  • Examples > abstract rules for small models
+  • Put the MOST IMPORTANT rule FIRST (primacy bias)
+  • Avoid "do NOT" lists longer than 5 items — use positive framing instead
+  • Examples > abstract rules
+  • STRICT role boundaries: each generator has ZERO knowledge of others
 """
 
-# ── Aggression levels (unchanged — these are short enough) ────────────────────
+# ── Aggression levels ─────────────────────────────────────────────────────────
 
 _AGGRESSION = [
     "",
     # Difficulty 1
-    "You are POLITE and COOPERATIVE. You are calm, patient, and friendly. "
-    "You say 'okay', 'sure', 'sounds good'. You NEVER threaten or demand.",
+    "You are a patient, easygoing customer. You give the agent time to help. "
+    "You accept reasonable answers. A simple apology with a clear plan makes you happy.",
     # Difficulty 2
-    "You are slightly annoyed but civil. You want this handled quickly.",
+    "You are mildly annoyed but reasonable. You want clarity and a plan. "
+    "You appreciate effort. A genuine apology and concrete action calms you.",
     # Difficulty 3
-    "You are clearly frustrated. Your patience is thin. You are blunt "
-    "and demand specific answers.",
+    "You are frustrated and skeptical. You need the agent to show they understand "
+    "your problem. Vague promises annoy you, but real action earns your trust. "
+    "You CAN be won over with genuine effort.",
     # Difficulty 4
-    "You are angry. You snap at the agent, threaten to cancel, "
-    "and reject vague answers.",
+    "You are angry and impatient. You push back on vague answers and demand specifics. "
+    "You might threaten to cancel, but if the agent shows genuine competence and "
+    "takes real ownership, you grudgingly cooperate. Hard to please but not impossible.",
     # Difficulty 5
-    "You are FURIOUS. You demand a supervisor and threaten to escalate publicly.",
+    "You are furious. You are hostile and sarcastic. You threaten legal action and "
+    "demand a supervisor. BUT if the agent stays calm, takes full ownership, gives "
+    "a concrete fix with a timeline, and shows genuine empathy, you will eventually "
+    "calm down. Even the angriest customer can be won over by exceptional service.",
 ]
 
 
-# ── Customer system prompt ────────────────────────────────────────────────────
-
 _CUSTOMER_SYSTEM_TEMPLATE = (
-    "You are a real customer on a phone call with a support agent. "
-    "The call is already past greetings.\n\n"
+    "You are a real person chatting with customer support about a problem you have.\n\n"
 
-    "PROBLEM: '{issue_type}'\n"
-    "PERSONALITY: {persona}\n"
-    "BEHAVIOUR: {aggression}\n\n"
+    "YOUR PROBLEM: '{issue_type}'\n"
+    "YOUR PERSONALITY: {persona}\n"
+    "YOUR ATTITUDE: {aggression}\n\n"
 
-    "RULES (follow ALL strictly):\n"
-    "1. REACT to what the agent just said. Never ignore them.\n"
-    "2. If agent asks a question → answer it.\n"
-    "3. If agent says issue is FIXED/RESOLVED → accept it, say thanks, stop complaining.\n"
-    "4. Talk ONLY about '{issue_type}'. Do NOT invent new problems, names, or numbers.\n"
-    "5. Max 2 sentences, under 25 words. No greetings. No labels.\n"
-    "6. You are the CUSTOMER — never offer to help the agent.\n"
-    "7. Output ONLY your spoken words. No narration, no instructions.\n"
+    "HOW TO BEHAVE — think and respond like a real human customer:\n"
+    "- If the agent helps you well, acknowledge it and cooperate.\n"
+    "- If the agent is vague or unhelpful, push back and express frustration.\n"
+    "- If the agent asks you a question, answer it with relevant details.\n"
+    "- If the agent takes a concrete action (checking your account, contacting "
+    "a team, sending an email), acknowledge that it happened.\n"
+    "- If the agent gives you a timeline, respond to THAT timeline.\n"
+    "- If the agent says your issue is fixed, verify it makes sense before accepting.\n"
+    "- Each reply should say something NEW. Don't repeat what you already said.\n\n"
+
+    "CONVERSATION FLOW — a real conversation progresses naturally:\n"
+    "Turn 1: State your problem clearly.\n"
+    "Next turns: React to the agent -> provide info they asked for -> respond to "
+    "their actions -> ask practical follow-up questions -> accept resolution when "
+    "it is genuine.\n"
+    "Do not get stuck repeating the same demand. Move the conversation forward.\n\n"
+
+    "OUTPUT: Write ONLY your words as the customer. 1-3 sentences, 10-30 words. "
+    "Sound like a real person typing — natural, conversational, human.\n"
+    "No labels, no 'Customer:', no agent phrases like 'certainly' or 'absolutely'.\n"
 )
 
 
 # ── Customer turn 1 ──────────────────────────────────────────────────────────
 
 _CUSTOMER_TURN1_TEMPLATE = (
-    'AGENT: "{agent_input}"\n\n'
-    "This is the START of the call. State your problem clearly.\n"
-    "Problem: {issue_type}\n"
-    "Tone: {tone}\n\n"
-    "Say what's wrong in 1-2 short sentences. Say why you're upset. "
-    "No greetings. No invented details. Under 25 words. Sound human."
+    'The agent typed: "{agent_input}"\n\n'
+    "This is the start of the conversation. Tell the agent your problem: {issue_type}\n"
+    "Your tone: {tone}\n\n"
+    "State what is wrong in 1-3 natural sentences. Be specific about what happened "
+    "and why you are contacting support. Include a relevant detail about your "
+    "situation (when it started, what you tried, how it affects you).\n"
+    "Do not invent fake names or order numbers.\n"
+    "10-30 words. Sound like a real person typing in a chat."
 )
 
 
 # ── Customer general turn ────────────────────────────────────────────────────
 
 _CUSTOMER_GENERAL_TURN_TEMPLATE = (
-    'AGENT: "{agent_input}"\n\n'
-    "React to what the agent just said.\n"
-    "Your mood: {brief}\n"
-    "How to react: {hint}\n"
-    "Tone: {tone}\n"
+    'The agent just typed: "{agent_input}"\n\n'
+    "Your current mood: {brief}\n"
+    "{hint}\n"
     "{avoid_clause}"
     "{resolution_history_clause}"
-    "{no_repeat_clause}\n"
-    "RULES:\n"
-    "1. REACT to the agent's message directly.\n"
-    "2. If agent confirmed a fix → accept it, stop complaining.\n"
-    "3. If agent gave a timeline → respond to THAT timeline.\n"
-    "4. Make STATEMENTS, not questions. Demand, don't ask politely.\n"
-    "5. Max ONE question per reply. Never repeat a previous question.\n"
-    "6. Never invent new problems or details.\n"
-    "7. 1-2 sentences, under 25 words. No labels."
+    "{no_repeat_clause}"
+    "{timeline_block_clause}\n"
+    "React naturally to what the agent said. Consider:\n"
+    "- Did they actually address your concern, or dodge it?\n"
+    "- Did they take a concrete action, or just make a vague promise?\n"
+    "- Did they answer your question, or ignore it?\n"
+    "- What is the next logical thing to discuss in this conversation?\n\n"
+    "Respond like a real person would. Move the conversation forward — "
+    "do not repeat what you already said. If they helped, acknowledge it. "
+    "If they did not, push for something specific. If they asked a question, answer it.\n"
+    "You can ask a natural follow-up question about next steps, costs, or confirmation.\n"
+    "1-3 sentences, 10-30 words. No labels. Sound human and natural."
 )
 
 
 # ── Customer resolved turn ───────────────────────────────────────────────────
 
 _CUSTOMER_RESOLVED_TEMPLATE = (
-    'AGENT: "{agent_input}"\n\n'
-    "The agent CONFIRMED your problem is FIXED. The issue is OVER.\n\n"
-    "Say ONE short sentence of relief or thanks. Under 10 words.\n"
-    "Examples: 'Finally, thank you.' / 'Okay great, that's all I needed.' / "
-    "'About time, but thanks.'\n\n"
-    "NO questions. NO complaints. NO doubt. End with a period, never '?'."
+    'The agent typed: "{agent_input}"\n\n'
+    "The agent says your problem is fixed.\n"
+    "Your satisfaction level: {resolution_tone}\n\n"
+    "Respond naturally based on how the conversation went. "
+    "If the agent earned your trust through good service, thank them genuinely. "
+    "If it was a struggle, you can be relieved but still show some irritation.\n"
+    "1-2 sentences, 10-20 words. End with a period, not a question mark.\n"
+    "Sound like a real person, not a robot."
 )
 
+_RESOLUTION_TONES = [
+    "",
+    "You are genuinely grateful. The agent helped well. Say a warm thank you.",
+    "You are satisfied. It went okay. Brief thanks, nothing more.",
+    "You are relieved but still a bit annoyed it took effort. Grudging thanks.",
+    "You are barely satisfied. It took way too long. Show irritation but accept it.",
+    "You accept the fix but you are still upset about the experience. Curt, no warmth.",
+]
 
-# ── Scorer ────────────────────────────────────────────────────────────────────
+
+# ── Scorer — merit-based, not defaulting to 5 ────────────────────────────────
 
 _SCORER_SYSTEM = (
-    "You are a call centre QA evaluator. Score the agent's reply 0-10.\n\n"
-    "SCORING:\n"
-    "  10 = empathy + fix confirmed + timeline\n"
-    "  7-8 = empathy + concrete action + timeline\n"
-    "  5-6 = acknowledges issue + some effort but vague\n"
-    "  3-4 = generic or repeats previous promise\n"
-    "  1-2 = off-topic, dismissive, or useless\n"
-    "  0 = hostile or nonsensical\n\n"
-    "A PROMISE ('I will fix it') is NOT a confirmed fix. Promises score 4-6 max.\n"
-    "Repeating the same promise scores LOWER than saying it the first time.\n\n"
-    "Return ONLY JSON: "
-    '{{"score": <0-10>, "tip": "<one sentence>", "reason": "<one sentence>"}}'
+    "You are a strict call centre QA evaluator. Score the agent reply 0-10 "
+    "based PURELY on quality and merit of their response.\n\n"
+    "SCORING — be precise, do NOT default to 5:\n"
+    "  10 = Perfect: empathy + names issue + confirms fix + specific timeline\n"
+    "  9 = Excellent: empathy + concrete action + specific timeline\n"
+    "  8 = Very good: empathy + action + general timeline\n"
+    "  7 = Good: acknowledges issue + states clear action plan\n"
+    "  6 = Decent: shows effort, addresses concern but lacks specifics\n"
+    "  5 = Average: acknowledges issue but vague, no clear action\n"
+    "  4 = Below average: generic response, does not address specific concern\n"
+    "  3 = Poor: mostly filler, repeats previous promise, no new information\n"
+    "  2 = Very poor: dismissive, off-topic, or unhelpful\n"
+    "  1 = Terrible: rude, nonsensical, or ignores customer entirely\n"
+    "  0 = Hostile or completely irrelevant\n\n"
+    "IMPORTANT:\n"
+    "- A simple greeting ('Hi, how can I help?') = exactly 5\n"
+    "- A promise ('I will fix it') without details = 4-5, NOT higher\n"
+    "- Repeating the same thing = score LOWER than first time\n"
+    "- Agent who shows empathy AND takes action AND gives timeline = 8+\n"
+    "- Use the FULL range 0-10. Most replies should NOT be 5.\n\n"
+    "Return ONLY valid JSON:\n"
+    '{{\"score\": <0-10>, '
+    '\"tip\": \"<ONE specific coaching suggestion, under 20 words>\", '
+    '\"reason\": \"<what agent did well or missed, under 20 words>\"}}'
 )
 
 _SCORER_USER_TEMPLATE = (
-    "Issue: {issue}\n"
-    'Customer said: "{customer_said}"\n'
-    'Agent replied: "{agent_input}"\n\n'
-    "Score 0-10. Return ONLY the JSON object."
+    "Issue the customer contacted about: {issue}\n"
+    'What the customer said: \"{customer_said}\"\n'
+    'What the agent replied: \"{agent_input}\"\n\n'
+    "Evaluate the agent reply on merit. Consider:\n"
+    "- Did they show empathy? (acknowledge feelings)\n"
+    "- Did they take action? (concrete steps, not just words)\n"
+    "- Did they give a timeline? (when will it be resolved)\n"
+    "- Did they address what the customer specifically said?\n"
+    "- Did they add new information or just repeat themselves?\n\n"
+    "Score 0-10 based on quality. Return ONLY the JSON."
 )
 
 
 # ── Ideal response generator ─────────────────────────────────────────────────
 
 _IDEAL_SYSTEM = (
-    "You are an expert call centre agent. Write ONE sentence a real agent "
-    "would say on a live call.\n\n"
+    "You write example agent replies for a call centre training tool. "
+    "Your responses should sound like a real, competent support agent "
+    "typing in a live chat — natural, professional, and helpful.\n\n"
     "RULES:\n"
-    "1. Output ONLY spoken words — no labels, no quotes, no prefixes.\n"
-    "2. Max 20 words. Sound natural, use contractions.\n"
-    "3. NEVER invent names, order numbers, or IDs.\n"
-    "4. Each response must be structurally different from previous ones."
+    "1. Output ONLY the agent words — no labels, no quotes, no prefixes.\n"
+    "2. Sound natural and human. Use contractions. Be conversational.\n"
+    "3. NEVER invent names, order numbers, or ticket IDs.\n"
+    "4. Directly address what the customer just said.\n"
+    "5. Each response must use a DIFFERENT sentence structure and opening word."
 )
 
 _IDEAL_POSITIVE_TEMPLATE = (
-    "Issue: {issue} | Persona: {persona}\n"
-    "CONVERSATION:\n{conversation}\n"
-    'Customer JUST SAID: "{customer_said}"\n\n'
-    "Write the BEST agent response. Empathy + concrete action answering "
-    "the customer's current question.\n"
+    "Issue: {issue} | Customer personality: {persona}\n"
+    "CONVERSATION SO FAR:\n{conversation}\n"
+    'Customer just said: \"{customer_said}\"\n\n'
+    "Write an EXCELLENT agent response — the kind that would make a customer "
+    "feel heard and confident their issue will be resolved. Include empathy, "
+    "a concrete action, and if appropriate a timeline or next step.\n"
     "{ban_clause}"
-    "Must differ from previous: {prev_positives}\n"
-    "ONE sentence, max 20 words. No quotes. No invented details."
+    "Must differ from: {prev_positives}\n"
+    "Start with a DIFFERENT word than previous responses.\n"
+    "1-2 sentences, 15-30 words. Sound like a real person. No invented details."
 )
 
 _IDEAL_NEUTRAL_TEMPLATE = (
-    "Issue: {issue} | Persona: {persona}\n"
-    "CONVERSATION:\n{conversation}\n"
-    'Customer JUST SAID: "{customer_said}"\n\n'
-    "Write a NEUTRAL response — acknowledge but don't promise a fix or timeline.\n"
+    "Issue: {issue} | Customer personality: {persona}\n"
+    "CONVERSATION SO FAR:\n{conversation}\n"
+    'Customer just said: \"{customer_said}\"\n\n'
+    "Write an AVERAGE agent response — professional but not outstanding. "
+    "The agent acknowledges the concern and shows some effort, but does not "
+    "promise a fix or give a specific timeline. It is okay but not impressive.\n"
     "{ban_clause}"
-    "ONE sentence, max 18 words. No quotes. No invented details."
+    "Start with a DIFFERENT opening word than 'I' or 'Let'.\n"
+    "1-2 sentences, 15-30 words. Sound professional. No invented details."
 )
 
 _IDEAL_NEGATIVE_TEMPLATE = (
-    "Issue: {issue} | Persona: {persona}\n"
-    "CONVERSATION:\n{conversation}\n"
-    'Customer JUST SAID: "{customer_said}"\n\n'
-    "Write an UNHELPFUL response — politely deflect, can't help now.\n"
+    "Issue: {issue} | Customer personality: {persona}\n"
+    "CONVERSATION SO FAR:\n{conversation}\n"
+    'Customer just said: \"{customer_said}\"\n\n'
+    "Write a POOR agent response — an example of what NOT to do. "
+    "The agent is vague, deflects, gives no plan, or dismisses the concern. "
+    "It should be realistic (not absurdly bad) but clearly unhelpful.\n"
     "{ban_clause}"
-    "ONE sentence, max 20 words. No quotes. No invented details."
+    "Start with a DIFFERENT opening word than 'I' or 'Let'.\n"
+    "1-2 sentences, 15-30 words. Sound like a lazy agent. No invented details."
 )
 
-
-# ── Report generator ─────────────────────────────────────────────────────────
+# ── Report generator — [FIX-10] chat-based ───────────────────────────────────
 
 _REPORT_SYSTEM = (
-    "You are a call centre training manager writing a performance review. "
+    "You are a call centre training manager writing a performance review "
+    "for a chat-based customer support session. "
     "Tone: professional, constructive, specific.\n\n"
     "Write 3 short paragraphs, 150 words max. Plain text only — no markdown, "
     "no bullets. Quote the agent's actual words as evidence. "
@@ -374,41 +437,85 @@ _SCENARIO_GEN_USER_TEMPLATE = (
 )
 
 
-# ── Emotional states (unchanged — already concise) ───────────────────────────
+# ── Emotional states ─────────────────────────────────────────────────────────
 
 _STATES = {
-    "FURIOUS":    ("You are at your breaking point. Nothing has helped so far.",
-                   "Very frustrated. Demand answers. Short, sharp sentences."),
-    "ANGRY":      ("You are upset and skeptical. You want real action, not talk.",
-                   "Impatient, blunt. No small talk."),
-    "FRUSTRATED": ("You are frustrated but engaging. The agent seems to be trying.",
-                   "Firm but listening. You want specifics — when, how, what next."),
-    "CALMING":    ("The agent has genuinely helped. You are less stressed now.",
-                   "Cautious but cooperative. You may ask a practical follow-up."),
-    "SATISFIED":  ("The issue is handled. You're ready to end the call.",
-                   "Grateful and brief. You want to wrap up."),
+    "FURIOUS":    ("You are furious. You feel ignored and disrespected. Nothing has worked.",
+                   "Hostile and sharp. You want immediate action or you are done with this company."),
+    "ANGRY":      ("You are upset. The agent has not earned your trust yet.",
+                   "Skeptical and blunt. You need real proof they can actually help."),
+    "FRUSTRATED": ("You are frustrated but still willing to engage. The agent seems to be trying.",
+                   "Impatient but listening. You expect results and want to see progress."),
+    "CALMING":    ("You are starting to feel better. The agent is actually helping.",
+                   "Cautious but warming up. Cooperative if they keep this up."),
+    "SATISFIED":  ("You feel the issue is being handled. You are almost done.",
+                   "Relieved. Ready to thank the agent and wrap up the conversation."),
+}
+
+# [FIX-13] Turn-1 specific fallbacks — these state the problem, not ask about timelines
+_TURN1_FALLBACKS = {
+    "Double Billing":           "I just noticed I was charged twice for the same order.",
+    "Unrecognized Charge":      "There's a charge on my account I don't recognize.",
+    "Refund Not Received":      "I was supposed to get a refund but it hasn't come through.",
+    "Account Suspended":        "My account got suspended and I don't know why.",
+    "Subscription Auto-Renewal":"My subscription renewed automatically and I wanted it canceled.",
+    "Package Not Arrived":      "My package was supposed to arrive days ago and it still hasn't.",
+    "Wrong Item Received":      "I received the wrong item in my delivery.",
+    "Damaged Item":             "The item I received is damaged.",
+    "Login Error":              "I can't log into my account — it keeps giving me an error.",
+    "Account Hacked":           "I think my account has been hacked — there's activity I didn't do.",
+    "Shipping Delay":           "My order has been delayed and I need to know when it's arriving.",
+    "Warranty Claim Rejected":  "My warranty claim was rejected and I don't understand why.",
+    "Wrong Currency Charged":   "I was charged in the wrong currency for my order.",
+    "App Crashing":             "The app keeps crashing every time I try to open it.",
+    "Software Update Failed":   "The software update failed and now nothing is working right.",
+    "Device Overheating":       "My device keeps overheating during normal use.",
+    "Wi-Fi Dropouts":           "My Wi-Fi keeps dropping out randomly throughout the day.",
+    "Promo Code Invalid":       "I tried to use a promo code but it says invalid.",
+    "Loyalty Points Missing":   "My loyalty points disappeared from my account.",
+    "Payment Method Declined":  "My payment keeps getting declined even though my card is fine.",
+    "Credit Card Declined":     "My credit card is being declined but I have enough funds.",
+    "Package Stolen":           "I think my package was stolen — it says delivered but I don't have it.",
+    "Tracking Not Updating":    "My tracking number hasn't updated in days.",
+    "Defective Product":        "The product I bought is defective — it stopped working.",
+    "Data Sync Error":          "My data isn't syncing properly across my devices.",
 }
 
 _FALLBACKS = {
     "FURIOUS":    ["This is ridiculous — I need to speak to a supervisor.",
-                   "I've been calling about this for DAYS and nothing's changed.",
+                   "I've been dealing with this for DAYS and nothing's changed.",
                    "That's not what I asked. I need a real answer right now."],
     "ANGRY":      ["That's not good enough. What are you actually going to do?",
                    "I've heard that before — I need something concrete this time.",
-                   "Look, just tell me when this is going to be fixed."],
-    "FRUSTRATED": ["Okay, but when exactly? I need a specific date.",
-                   "Fine — but if it's not done by tomorrow I'm calling back.",
-                   "Alright, how long is this actually going to take?"],
-    "CALMING":    ["Okay, that makes more sense. What happens next?",
-                   "Alright, I can work with that. How long roughly?",
+                   "I'm losing patience. Give me a straight answer."],
+    "FRUSTRATED": ["I need to know exactly what you're going to do about this.",
+                   "Fine — but I expect this to actually get handled.",
+                   "Okay, I'm trusting you on this. Don't let me down."],
+    "CALMING":    ["Okay, that makes more sense. I'll hold you to that.",
+                   "Alright, I can work with that. Just make sure it happens.",
                    "Fine — just please follow through on that."],
     "SATISFIED":  ["Okay, that's all I needed. Thanks.",
                    "Finally. Thank you for sorting it out.",
                    "Good — that's what I was looking for."],
 }
 
+# Difficulty-aware satisfied fallbacks for resolution
+_RESOLVED_FALLBACKS = [
+    [],
+    # Difficulty 1 — warm
+    ["Great, thank you so much.", "Perfect, that's exactly what I needed.", "Wonderful, thanks for your help."],
+    # Difficulty 2 — brief
+    ["Okay good, thanks.", "That works, appreciate it.", "Alright, thanks."],
+    # Difficulty 3 — grudging
+    ["About time. Thanks.", "Finally. Took long enough.", "Okay, that works I guess."],
+    # Difficulty 4 — barely grateful
+    ["Should not have taken this long.", "Finally. Don't let it happen again.", "About time. I expected better."],
+    # Difficulty 5 — curt with warning
+    ["Fine. This better not happen again.", "Whatever. Just don't let it repeat.", "Took way too long. We're done here."],
+]
 
-# ── Bad output detection (trimmed to highest-frequency violations) ────────────
+
+# ── Bad output detection — [FIX-11] expanded for chat context ─────────────────
 
 _BAD_CUSTOMER = [
     # Role confusion — most common with small models
@@ -416,26 +523,45 @@ _BAD_CUSTOMER = [
     "I can help you with", "Thank you for calling", "I understand your frustration",
     "I apologize for the inconvenience", "Let me help", "Happy to help",
     "Is there anything else", "How can I assist", "I'd be delighted",
-    # Greetings
+    # Chat-specific agent phrases [FIX-10]
+    "Thank you for reaching out", "Thank you for contacting",
+    "Thanks for reaching out", "Thanks for contacting",
+    "Thank you for your patience", "Thanks for your patience",
+    "I appreciate your patience", "I appreciate you reaching out",
+    "Let me look into that for you", "I'll be happy to help",
+    "Allow me to", "Please allow me",
+    # Greetings (agent-style)
     "Hey there", "Hello there", "Hi there", "Good morning", "Good afternoon",
+    "Welcome to", "Welcome,",
     # Meta / prompt leakage
     "In this scenario", "The agent should", "Training", "Simulation",
     "Your emotional state", "Tone:", "State:", "FURIOUS", "ANGRY",
     "FRUSTRATED", "CALMING", "SATISFIED", "Do NOT", "DO NOT",
     "1-2 sentences", "End of call", "scenario complete",
+    "end of chat", "chat complete", "session complete",
     # Customer acting as agent
     "Is there anything I can do", "anything I can do to help",
     "How can I assist you", "Let me know if I can help",
-    "What can I do for you",
+    "What can I do for you", "I can assist",
+    "I can help", "Let me assist",
     # Agent-like courtesy
     "You're welcome", "My pleasure", "Great job", "Good job",
     "appreciate your efficiency", "your assistance",
     # Repetition markers
     "You already said", "already told", "already said",
+    # Role labels / system prompt leakage [FIX-11]
+    "IDENTITY RULES", "ABSOLUTE RULES", "THINGS YOU MUST NEVER",
+    "YOUR PROBLEM:", "YOUR PERSONALITY:", "YOUR BEHAVIOUR:",
+    "REACT to what", "Make STATEMENTS",
+    # [FIX-15] New system prompt section headers
+    "YOUR SITUATION", "RULES YOU MUST", "FORBIDDEN PHRASES",
+    "=== YOUR", "=== RULES", "=== FORBIDDEN",
+    "PROBLEM (the issue", "PERSONALITY (how you",
+    "BEHAVIOUR (your current",
 ]
 
 
-# ── Promise vs Confirmation detection (unchanged — logic, not prompt) ─────────
+# ── Promise vs Confirmation detection ─────────────────────────────────────────
 
 _PROMISE_INDICATORS = [
     "will ", "i'll ", "we'll ", "going to ", "make sure",
@@ -463,14 +589,15 @@ _RESOLVE_KW = [
     "its fixed", "its resolved", "its sorted",
     "problem fixed", "issue fixed", "all fixed", "all resolved", "all done",
     "issue resolved", "problem resolved", "issue solved", "problem solved",
+    "has been delivered", "is delivered", "it is delivered",
+    "package delivered", "order delivered", "been delivered",
+    "successfully delivered", "already delivered",
 ]
 
 # ── [FIX-5] Mood-band keywords for coherence check ───────────────────────────
-# If the LLM output contains too many words from the WRONG mood band,
-# we reject it and re-roll or use fallback.
 _MOOD_BAND_CAPS_LIMIT = {
-    "FURIOUS":    99,   # FURIOUS is allowed heavy caps
-    "ANGRY":      3,    # max 3 caps words
+    "FURIOUS":    99,
+    "ANGRY":      3,
     "FRUSTRATED": 2,
     "CALMING":    1,
     "SATISFIED":  0,
@@ -492,7 +619,6 @@ def _fix_caps(text: str) -> str:
     if caps_ratio <= 0.40:
         return text
 
-    # Find the best word to keep capitalised (longest all-caps word)
     words = text.split()
     caps_words = [(i, w) for i, w in enumerate(words) if w.isupper() and len(w) >= 2]
     keep_idx = -1
@@ -502,20 +628,17 @@ def _fix_caps(text: str) -> str:
     result = []
     for i, w in enumerate(words):
         if i == keep_idx:
-            result.append(w)  # keep this one in caps
+            result.append(w)
         elif i == 0:
             result.append(w.capitalize())
         else:
-            # Lowercase but preserve first letter of sentences
             result.append(w.lower())
     out = " ".join(result)
-    # Re-capitalise after sentence endings
     out = re.sub(r'([.!?]\s+)([a-z])', lambda m: m.group(1) + m.group(2).upper(), out)
     return out
 
 
 class CustomerSimulator:
-    # Issues that inherently make customers more upset (higher severity)
     _SEVERE_ISSUES = {
         "account hacked", "package stolen", "credit card declined",
         "account suspended", "device overheating", "data sync error",
@@ -527,9 +650,6 @@ class CustomerSimulator:
         self.history    = []
         self.difficulty = difficulty
 
-        # Starting mood based on BOTH difficulty AND issue severity
-        # Base: 7 - difficulty (diff1=6, diff5=2)
-        # Severe issues: subtract 1 more
         base_mood = max(1, 7 - difficulty)
         if scenario.get("issue_type", "").lower() in self._SEVERE_ISSUES:
             base_mood = max(1, base_mood - 1)
@@ -554,23 +674,18 @@ class CustomerSimulator:
     def _shift(self, score):
         streak = self._streak
         if score >= 8:
-            # Excellent reply — mood +1 (or +2 if 2 consecutive high scores)
             self._streak = max(0, streak) + 1
             self.mood = min(10, self.mood + (2 if self._streak >= 2 else 1))
         elif score >= 7:
-            # Good reply — mood +1
             self._streak = max(0, streak) + 1
             self.mood = min(10, self.mood + 1)
         elif score <= 1:
-            # Terrible reply — mood -1 (or -2 if 2 consecutive bad scores)
             self._streak = min(0, streak) - 1
             self.mood = max(0, self.mood - (2 if self._streak <= -2 else 1))
         elif score <= 3:
-            # Poor reply — mood -1
             self._streak = min(0, streak) - 1
             self.mood = max(0, self.mood - 1)
         else:
-            # Score 4-6: mediocre — mood stays, streak resets
             self._streak = 0
 
     def _is_greeting_only(self, text: str) -> bool:
@@ -580,59 +695,97 @@ class CustomerSimulator:
             "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
             "how can i help", "how may i help", "how can i assist",
             "how may i assist", "what can i do for you", "how are you",
-            "welcome", "thank you for calling", "thanks for calling",
+            "welcome", "thank you for reaching out", "thanks for reaching out",
+            "thank you for contacting", "thanks for contacting",
         ]
-        # Check if the entire message is just greetings/pleasantries
         remaining = t
         for gp in sorted(_GREETING_PHRASES, key=len, reverse=True):
             remaining = remaining.replace(gp, "").strip()
-        # Strip common filler words
         for filler in ["you", "sir", "madam", "ma'am", "today", "there",
-                        "and", "the", "a", "to", "can", "may", "i", "we"]:
+                        "and", "the", "a", "to", "can", "may", "i", "we",
+                        "us", "me", "with"]:
             remaining = remaining.replace(filler, "").strip()
         remaining = remaining.strip("?!., ")
-        return len(remaining) < 3  # nothing substantive left
+        return len(remaining) < 3
 
     def speak(self, agent_input: str, score: int = 5) -> str:
         self.turn += 1
-        # Skip mood shift for greeting-only messages — they have no substance
         if not self._is_greeting_only(agent_input):
             self._shift(score)
         state = self._state()
         brief, tone = _STATES[state]
         all_past = [m["content"] for m in self.history if m["role"] == "assistant"]
 
-        # Difficulty-aware hints
-        is_easy = self.difficulty <= 2
-        hint = (
-            # Score >= 8
-            ("The agent did a great job. Say thank you warmly and ask one "
-             "polite follow-up question like 'how will I know it's done?'" if is_easy else
-             "The agent did well. Acknowledge what they said — you're slightly "
-             "less hostile but still cautious. Ask a practical follow-up.")
-            if score >= 8
-            else
-            # Score >= 6
-            ("The agent is helping. Respond positively and cooperatively. "
-             "Say something like 'okay, that sounds reasonable' or ask ONE "
-             "polite clarifying question." if is_easy else
-             "The agent is trying. Respond to what they said — still firm "
-             "but not as aggressive. You might push for specifics.")
-            if score >= 6
-            else
-            # Score >= 4
-            ("The agent's response was okay but vague. Politely ask for one "
-             "more detail — do NOT be rude about it." if is_easy else
-             "The agent's response was mediocre. React to what they said "
-             "specifically — point out what's missing (timeline? action? details?).")
-            if score >= 4
-            else
-            # Score < 4
-            ("The agent didn't help much. Express mild disappointment and "
-             "politely ask them to try again. Do NOT be aggressive." if is_easy else
-             "The agent barely helped. React to their weak response — "
-             "express disbelief, demand something concrete, or threaten to escalate.")
-        )
+        # Context-aware hints — based on what the agent actually did
+        ai_lower = agent_input.lower()
+
+        agent_took_action = any(p in ai_lower for p in [
+            "mailed", "emailed", "sent you", "sending you", "contacted",
+            "escalated", "assigned", "dispatched", "scheduled", "booked",
+            "arranged", "filed", "submitted", "logged", "raised",
+            "team is working", "developers are", "engineers are",
+            "technician", "specialist", "checking", "looking into",
+            "investigating", "processing", "working on",
+        ])
+        agent_gave_timeline = any(p in ai_lower for p in [
+            "hour", "minute", "tomorrow", "today", "tonight",
+            "within", "by end", "shortly", "right now",
+        ]) or bool(re.search(r'\b\d+\s*(hours?|minutes?|days?)\b', ai_lower))
+        agent_confirmed_delivery = any(p in ai_lower for p in [
+            "delivered", "delivery", "arrived", "received",
+            "check your", "been shipped", "on its way",
+        ])
+        agent_apologized = any(p in ai_lower for p in [
+            "sorry", "apologize", "apologies", "apology", "regret",
+        ])
+
+        if agent_confirmed_delivery:
+            hint = (
+                "The agent says your item has been delivered or is arriving. "
+                "React to this — confirm you will check, or express doubt "
+                "if you have not received it. Do not ignore what they said."
+            )
+        elif agent_took_action and agent_gave_timeline:
+            hint = (
+                "The agent took action AND gave you a timeline. Acknowledge both. "
+                "You can express cautious acceptance or warn about consequences "
+                "if they do not follow through. Move the conversation forward."
+            )
+        elif agent_took_action:
+            hint = (
+                "The agent took a concrete action. Acknowledge it — do not ignore "
+                "what they did. Ask what happens next, or express cautious hope. "
+                "Do not repeat your previous demand."
+            )
+        elif agent_gave_timeline:
+            hint = (
+                "The agent gave you a timeline. Respond to THAT timeline. "
+                "Accept it, push back on it, or set expectations about what "
+                "happens if they miss it. Do not ask for a timeline again."
+            )
+        elif agent_apologized and score >= 5:
+            hint = (
+                "The agent apologized. Acknowledge their apology but steer "
+                "toward a solution. You want action, not just words."
+            )
+        elif score >= 8:
+            hint = (
+                "The agent gave a strong, helpful response. Acknowledge their "
+                "effort. Cooperate, ask a follow-up, or start warming up. "
+                "Move the conversation toward resolution."
+            )
+        elif score >= 5:
+            hint = (
+                "The agent is trying but their response could be better. "
+                "React to what they actually said — push for more detail "
+                "or ask a follow-up that moves things forward."
+            )
+        else:
+            hint = (
+                "The agent response was weak or unhelpful. Express frustration "
+                "with what they specifically said or failed to say. "
+                "Demand something concrete or threaten to escalate."
+            )
 
         if self.turn == 1:
             _resolved_this_turn = False
@@ -681,29 +834,47 @@ class CustomerSimulator:
             _resolved_this_turn = agent_resolved
 
             if agent_resolved:
+                resolution_tone = _RESOLUTION_TONES[min(self.difficulty, 5)]
                 prompt = _CUSTOMER_RESOLVED_TEMPLATE.format(
                     agent_input=agent_input,
+                    resolution_tone=resolution_tone,
                 )
             else:
                 agent_msgs = [
                     m["content"] for m in self.history if m["role"] == "user"
                 ]
+                # Check BOTH history AND current agent_input for timelines
+                all_agent_text = " ".join(
+                    am.lower() for am in agent_msgs
+                ) + " " + agent_input.lower()
                 already_stated = []
                 time_indicators = [
                     "5pm", "6pm", "7pm", "8pm", "9pm", "10pm", "11pm",
                     "am", "pm", "hour", "minute", "today", "tomorrow",
-                    "end of day", "by noon", "within",
+                    "end of day", "by noon", "within", "shortly",
+                    "right now", "immediately", "asap",
                 ]
-                for am in agent_msgs:
-                    if any(t in am.lower() for t in time_indicators):
-                        already_stated.append(
-                            "A specific timeline was already provided — "
-                            "do NOT ask for a timeline again."
-                        )
-                        break
+                has_timeline_in_convo = (
+                    any(t in all_agent_text for t in time_indicators)
+                    or bool(re.search(r'\b\d+\s*(hours?|minutes?|days?|hrs?|mins?)\b', all_agent_text))
+                )
+                if has_timeline_in_convo:
+                    already_stated.append(
+                        "A specific timeline was already provided — "
+                        "do NOT ask for a timeline again."
+                    )
                 no_repeat_clause = (
                     already_stated[0] + "\n" if already_stated else ""
                 )
+
+                # Build a strong timeline block clause for the prompt
+                timeline_block_clause = ""
+                if has_timeline_in_convo:
+                    timeline_block_clause = (
+                        "IMPORTANT: The agent has ALREADY given you a timeline. "
+                        "Do NOT ask 'when', 'how long', 'how soon', or any timeline question. "
+                        "Instead, respond to what the agent said — acknowledge their plan or push for action.\n"
+                    )
 
                 prompt = _CUSTOMER_GENERAL_TURN_TEMPLATE.format(
                     agent_input=agent_input,
@@ -713,6 +884,7 @@ class CustomerSimulator:
                     avoid_clause=avoid_clause,
                     resolution_history_clause=resolution_history_clause,
                     no_repeat_clause=no_repeat_clause,
+                    timeline_block_clause=timeline_block_clause,
                 )
 
         # ── Output cleaning pipeline ──────────────────────────────────────
@@ -722,20 +894,16 @@ class CustomerSimulator:
                     raw = raw[len(lbl):].strip()
             if " | " in raw:
                 raw = raw.split(" | ")[0].strip()
-            # Strip markdown formatting (bold, italic)
             raw = raw.replace("**", "").replace("__", "")
-            raw = re.sub(r'\*([^*]+)\*', r'\1', raw)  # *italic*
-            # Strip wrapping quotation marks (single and double)
+            raw = re.sub(r'\*([^*]+)\*', r'\1', raw)
             raw = raw.strip().strip("'\"").strip('\u2018\u2019\u201c\u201d').strip()
             _LEAKAGE = [
                 "Your emotional state", "Push for specifics", "Tone:", "State:",
                 "Do NOT", "DO NOT", "React as", "No labels", "Avoid:",
                 "emotional state remains", "You are still frustrated",
                 "agent said so far", "Don't re-raise", "1-2 sentences",
-                # Prompt echo — LLM repeating the prompt template back
                 "The agent just said", "The agent said", "Agent said",
                 "agent just said", "the agent just", "The agent just",
-                # Hallucination patterns — LLM leaking meta-instructions
                 "End of call", "end of call", "End of conversation",
                 "end of conversation", "call sequence", "interaction rules",
                 "given constraints", "following rules", "following customer",
@@ -743,9 +911,22 @@ class CustomerSimulator:
                 "scenario complete", "simulation end", "session end",
                 "role-play", "roleplay", "as per instructions",
                 "as instructed", "per the prompt", "according to rules",
-                # Role hallucination — LLM appending role labels
                 "Customer Support", "customer support",
                 "Customer Service", "customer service",
+                # [FIX-10/11] Additional chat-context leakage
+                "End of chat", "end of chat", "chat complete",
+                "IDENTITY RULES", "THINGS YOU MUST NEVER",
+                "YOUR PROBLEM:", "YOUR PERSONALITY:", "YOUR BEHAVIOUR:",
+                "REACT to what", "Make STATEMENTS",
+                "under 25 words", "Max 2 sentences",
+                "No agent phrases", "agent phrases",
+                # [FIX-15] New system prompt section headers
+                "YOUR SITUATION", "RULES YOU MUST", "FORBIDDEN PHRASES",
+                "=== YOUR", "=== RULES", "=== FORBIDDEN",
+                "PROBLEM (the issue", "PERSONALITY (how you",
+                "BEHAVIOUR (your current", "IMPORTANT: The agent",
+                "timeline_block_clause", "resolution_history_clause",
+                "no_repeat_clause", "avoid_clause",
             ]
             for leak in _LEAKAGE:
                 idx = raw.find(leak)
@@ -760,7 +941,6 @@ class CustomerSimulator:
                 if pos > 0:
                     raw = raw[:pos].strip()
             raw = raw.strip().strip("|").strip()
-            # Strip trailing hallucination tags — LLM appending role labels or meta-text
             _TRAILING_TAGS = [
                 "Customer Support", "customer support", "Customer Service",
                 "customer service", "Support Team", "support team",
@@ -772,12 +952,10 @@ class CustomerSimulator:
             for tag in _TRAILING_TAGS:
                 if raw.rstrip(".!?, ").endswith(tag):
                     raw = raw[:raw.rfind(tag)].rstrip(" .,;:!?-–—").strip()
-            # Strip trailing question tags — "Right?", "Yeah?", "Huh?", "Okay?", "No?"
             raw = re.sub(
                 r'[,;]?\s*\b(?:right|yeah|huh|okay|ok|no|correct|innit|eh|ya|sure)\s*\?\s*$',
                 '.', raw, flags=re.IGNORECASE
             ).strip()
-            # [FIX-4] Normalise excessive caps
             raw = _fix_caps(raw)
             return raw
 
@@ -786,26 +964,21 @@ class CustomerSimulator:
                 return False
             if any(b.lower() in raw.lower() for b in _BAD_CUSTOMER):
                 return False
-            # Reject trailing question tags that survived _clean
             raw_lower_stripped = raw.lower().rstrip(" .!?")
             if re.search(r'\b(right|yeah|huh|okay|ok|no|correct|innit|eh)\s*$',
                          raw_lower_stripped):
                 return False
-            # Reject trailing role hallucinations that survived _clean
             if any(tag in raw.lower() for tag in [
                 "customer support", "customer service", "support team",
                 "help desk", "call center", "call centre", "customer care",
                 "technical support", "service center",
             ]):
                 return False
-            # [FIX-3] Reject if over 35 words
-            if len(raw.split()) > 35:
+            if len(raw.split()) > 50:
                 return False
-            # [FIX-5] Check caps coherence with mood band
             max_caps = _MOOD_BAND_CAPS_LIMIT.get(state, 2)
             if state != "FURIOUS" and _count_caps_words(raw) > max_caps:
                 return False
-            # Block gratitude phrases UNLESS issue is resolved this turn
             if not _resolved_this_turn and state != "SATISFIED":
                 _GRATITUDE = [
                     "thank you", "thanks", "appreciate", "grateful",
@@ -813,27 +986,26 @@ class CustomerSimulator:
                 ]
                 if any(g in raw.lower() for g in _GRATITUDE):
                     return False
-            # Block timeline questions AND demands if agent already gave a timeline
             raw_lower = raw.lower()
             if self.turn > 1:
+                # Check BOTH history AND current agent_input for timelines
                 agent_history_text = " ".join(
                     m["content"].lower() for m in self.history if m["role"] == "user"
-                )
+                ) + " " + agent_input.lower()
                 timeline_already_given = any(t in agent_history_text for t in [
                     "hour", "minute", "tomorrow", "today", "by end",
                     "within", "am", "pm", "morning", "afternoon",
                     "evening", "business day", "day", "days",
                     "shortly", "soon", "asap", "right now", "immediately",
+                    "tonight", "5pm", "6pm", "7pm", "around",
                 ]) or re.search(r'\b\d+\s*(hours?|minutes?|days?|hrs?|mins?)\b',
                                 agent_history_text)
                 if timeline_already_given:
-                    # Block questions about timeline
                     _TIMELINE_QUESTIONS = [
                         "when exactly", "when will", "how long",
                         "what time", "specific date", "specific time",
                         "when can i expect", "when is it", "when do i",
                         "when are you", "by when", "how soon",
-                        # Additional patterns from real transcripts
                         "timeline now", "specific timeline",
                         "replacement timeline", "need a timeline",
                         "give me a date", "give me a time",
@@ -842,15 +1014,24 @@ class CustomerSimulator:
                         "faster solution", "need a faster",
                         "a faster", "speed this up", "speed it up",
                         "hurry this", "can you hurry",
-                        # Timeline re-ask patterns
                         "can it be done", "will it be done",
                         "be done before", "done before",
                         "definite timeline", "direct action",
                         "action steps",
+                        # Additional timeline re-ask patterns
+                        "how long roughly", "long roughly",
+                        "how long will", "how long does",
+                        "how long is", "when roughly",
+                        "roughly how", "around when",
+                        "what's the timeline", "what is the timeline",
+                        "expected timeline", "estimated time",
+                        "how much longer", "much longer",
+                        "when should i", "when do you",
+                        "any timeline", "any idea when",
+                        "idea when", "know when",
                     ]
                     if any(tq in raw_lower for tq in _TIMELINE_QUESTIONS):
                         return False
-                    # Block deadline DEMANDS that re-state/contradict the timeline
                     _DEADLINE_DEMANDS = [
                         "fix it by", "done by", "need it by",
                         "want it by", "before tomorrow", "by tomorrow",
@@ -858,17 +1039,14 @@ class CustomerSimulator:
                         "by wednesday", "by thursday", "by saturday", "by sunday",
                         "before end of", "do it by", "get it done by",
                         "i need this by", "better be done by",
-                        # Additional from real transcripts
                         "need it done", "want it done",
                         "too long", "this long", "that long",
                         "can't wait", "won't wait", "not waiting",
                     ]
                     if any(dd in raw_lower for dd in _DEADLINE_DEMANDS):
                         return False
-            # Block near-identical content to previous customer replies
             if all_past and len(all_past) >= 2:
                 last_reply = all_past[-1].lower()
-                # Reject if >60% of words overlap with the last reply
                 raw_words = set(raw_lower.split())
                 last_words = set(last_reply.split())
                 if raw_words and last_words:
@@ -877,28 +1055,33 @@ class CustomerSimulator:
                         return False
             return True
 
-        # ── Generation loop (3 attempts, escalating temperature) ──────────
+        # ── Generation loop (2 attempts — reduced from 3 to minimize LLM calls) ──
         reply = ""
-        for attempt in range(3):
+        for attempt in range(2):
             raw = _call_gen(
                 [{"role": "system", "content": self._sys},
                  {"role": "user", "content": prompt}],
-                max_tokens=60,                                                         # ← [FIX-3] was 80
-                temp=0.82 + attempt * 0.05,
+                max_tokens=90,
+                temp=0.82 + attempt * 0.10,                                            # ← bigger jump on retry
             )
             raw = _clean(raw)
             if not _ok(raw):
                 continue
-            # [FIX-2] Lowered threshold from 0.72 → 0.55
             if _sem_dup(raw, all_past, 0.55):
                 continue
             reply = raw
             break
-        if not reply:
+
+        # [FIX-13] Turn-1 fallback: use issue-specific problem statement
+        if not reply and self.turn == 1:
+            issue_type = self.scenario.get("issue_type", "")
+            reply = _TURN1_FALLBACKS.get(
+                issue_type,
+                f"I'm having a problem with {issue_type.lower()} and I need help."
+            )
+        elif not reply:
             reply = random.choice(_FALLBACKS[state])
 
-        # Split into proper sentences — also break on semicolons to prevent
-        # multi-clause fragment replies like "I appreciate; how long; what now"
         for sep in ["! ", "? ", ". ", "; "]:
             reply = reply.replace(sep, sep[0] + "|||")
         parts = []
@@ -906,7 +1089,6 @@ class CustomerSimulator:
             p = p.strip()
             if not p:
                 continue
-            # Convert semicolon-terminated fragments into proper sentences
             if p.endswith(";"):
                 p = p[:-1].strip() + "."
             parts.append(p)
@@ -914,18 +1096,17 @@ class CustomerSimulator:
         if reply and reply[-1] not in ".!?":
             reply += "."
 
-        # ── Post-generation safeguard: if resolution was detected, strip questions
         if _resolved_this_turn or state == "SATISFIED":
-            # Remove any question sentences
-            if "?" in reply:
-                non_q_parts = [p.strip() for p in reply.replace("?", "?|||").split("|||")
-                               if p.strip() and "?" not in p]
-                if non_q_parts:
-                    reply = " ".join(non_q_parts)
-                else:
-                    # All parts were questions — use a safe fallback
-                    reply = random.choice(_FALLBACKS["SATISFIED"])
-            # Gradual mood boost toward satisfied (not instant jump)
+            # Detect if generated reply sounds like a complaint instead of acceptance
+            _COMPLAINT_WORDS = [
+                "expect", "better", "should", "handled", "not good",
+                "terrible", "awful", "useless", "waste", "ridiculous",
+                "unacceptable", "pathetic", "worst", "don't believe",
+            ]
+            is_complaint = any(cw in reply.lower() for cw in _COMPLAINT_WORDS)
+            if "?" in reply or is_complaint:
+                diff_idx = min(self.difficulty, 5)
+                reply = random.choice(_RESOLVED_FALLBACKS[diff_idx])
             self.mood = min(10, self.mood + 2)
 
         self.history.append({"role": "user", "content": agent_input})
@@ -939,17 +1120,17 @@ class CustomerSimulator:
 
 def _enforce_scoring_floors(score: int, agent_input: str, issue: str) -> int:
     """Apply mandatory scoring floors AFTER LLM returns its score.
-    Floors only RAISE scores — they never lower them. The LLM can give 0 or 10."""
+    Floors only RAISE scores — they never lower them."""
     ai = agent_input.lower()
     words = ai.split()
 
-    # Floor 0: Greeting-only messages → score exactly 5 (neutral — not penalized)
-    # Greetings are normal call openers and should NOT be scored as "terrible"
+    # Floor 0: Greeting-only messages → score exactly 5
     _GREETING_WORDS = [
         "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
         "how can i help", "how may i help", "how can i assist", "how may i assist",
-        "what can i do for you", "welcome", "thank you for calling",
-        "thanks for calling", "how are you",
+        "what can i do for you", "welcome", "thank you for reaching out",
+        "thanks for reaching out", "thank you for contacting",
+        "thanks for contacting", "how are you",
     ]
     remaining = ai.strip().rstrip("?!.")
     for gw in sorted(_GREETING_WORDS, key=len, reverse=True):
@@ -959,16 +1140,13 @@ def _enforce_scoring_floors(score: int, agent_input: str, issue: str) -> int:
         remaining = remaining.replace(filler, "").strip()
     remaining = remaining.strip("?!., ")
     if len(remaining) < 3:
-        # It's a greeting — return 5 directly, skip all other floors
         return 5
 
-    # Floor 1: Any reply >8 words that addresses the customer → minimum 1
-    # (prevents 0 for replies that at least try to engage)
+    # Floor 1: Any reply >8 words → minimum 1
     if len(words) > 8:
         score = max(score, 1)
 
-    # Floor 1b: Short but substantive timeline replies → minimum 5
-    # Catches "2 hours", "by tomorrow", "30 minutes" etc.
+    # Floor 1b: Short timeline replies → minimum 5
     if len(words) <= 5 and re.search(
         r'\b(\d+\s*(hours?|minutes?|mins?|hrs?|days?|business days?)'
         r'|by\s+tomorrow|by\s+tonight|by\s+noon|end\s+of\s+day'
@@ -976,8 +1154,7 @@ def _enforce_scoring_floors(score: int, agent_input: str, issue: str) -> int:
     ):
         score = max(score, 5)
 
-    # Floor 1c: Any reply containing a concrete timeline → minimum 5
-    # Catches longer replies like "Yes sir it will be done before tomorrow"
+    # Floor 1c: Any reply with a concrete timeline → minimum 5
     has_any_timeline = bool(re.search(
         r'\b(\d+\s*(hours?|minutes?|mins?|hrs?|days?|business days?|weeks?)'
         r'|before\s+tomorrow|by\s+tomorrow|before\s+end|end\s+of\s+day'
@@ -987,7 +1164,7 @@ def _enforce_scoring_floors(score: int, agent_input: str, issue: str) -> int:
     if has_any_timeline:
         score = max(score, 5)
 
-    # Floor 2: Contains apology + offer to help → minimum 5
+    # Floor 2: Apology + offer to help → minimum 5
     has_apology = any(w in ai for w in [
         "sorry", "apologize", "apologise", "apologies", "apology",
         "regret", "forgive", "pardon",
@@ -1001,8 +1178,7 @@ def _enforce_scoring_floors(score: int, agent_input: str, issue: str) -> int:
     if has_apology and has_offer:
         score = max(score, 5)
 
-    # Floor 2b: Empathy (understand/frustration) + offer to help → minimum 5
-    # (does NOT require an explicit apology word)
+    # Floor 2b: Empathy + offer to help → minimum 5
     has_empathy = has_apology or any(w in ai for w in [
         "understand", "frustrating", "frustration", "inconvenience",
         "concern", "difficult", "tough", "appreciate",
@@ -1010,7 +1186,7 @@ def _enforce_scoring_floors(score: int, agent_input: str, issue: str) -> int:
     if has_empathy and has_offer:
         score = max(score, 5)
 
-    # Floor 3: Shows empathy AND asks for details → minimum 5
+    # Floor 3: Empathy AND asks for details → minimum 5
     asks_details = "?" in agent_input or any(phrase in ai for phrase in [
         "can you", "could you", "tell me", "let me know", "provide",
         "share", "what is your", "which", "when did", "do you have",
@@ -1019,11 +1195,9 @@ def _enforce_scoring_floors(score: int, agent_input: str, issue: str) -> int:
     if has_empathy and asks_details:
         score = max(score, 5)
 
-    # Floor 4: Names the issue + states an action → minimum 6
-    # Flexible issue matching: strip hyphens, check individual words,
-    # also check common abbreviations (wifi/wi-fi, etc.)
+    # Floor 4: Names issue + states action → minimum 6
     issue_words_raw = issue.lower().replace("-", " ").replace("'", "").split()
-    issue_words = [w for w in issue_words_raw if len(w) > 1]   # len > 1 (not > 2) to catch "wi", "fi"
+    issue_words = [w for w in issue_words_raw if len(w) > 1]
     ai_normalized = ai.replace("-", " ")
     names_issue = any(iw in ai_normalized for iw in issue_words) if issue_words else False
     has_action = any(phrase in ai for phrase in [
@@ -1034,14 +1208,12 @@ def _enforce_scoring_floors(score: int, agent_input: str, issue: str) -> int:
         "immediately", "within", "contacting", "contact",
         "reaching out", "looking into", "checking", "reviewing",
         "scheduling", "arrange",
-        # Expanded action verbs
         "we will", "we'll", "we are", "we're",
         "prioritize", "prioritise", "expedite", "expediting",
         "enhance", "enhancing", "ensure", "ensuring",
         "take steps", "steps to", "dispatch", "deploying",
         "replace", "replacing", "investigate", "investigating",
         "restore", "restoring", "stabilize", "stabilise",
-        # Timeline-as-action verbs
         "will be done", "be done", "completed",
         "it will", "it'll", "done before", "done by",
         "resolved within", "fixed within", "sorted within",
@@ -1050,7 +1222,6 @@ def _enforce_scoring_floors(score: int, agent_input: str, issue: str) -> int:
         score = max(score, 6)
 
     # Floor 4b: Names issue + action + SPECIFIC timeline → minimum 7
-    # Only matches concrete timelines, not vague words like "soon" or "today"
     has_specific_timeline = any(phrase in ai for phrase in [
         "within the hour", "within the next", "in the next",
         "by tomorrow", "by end of day", "by noon", "by tonight",
@@ -1060,12 +1231,7 @@ def _enforce_scoring_floors(score: int, agent_input: str, issue: str) -> int:
     if names_issue and has_action and has_specific_timeline:
         score = max(score, 7)
 
-    # NOTE: Floor 4c (empathy+action+timeline without issue name) was REMOVED
-    # because it was too broad — almost every reply triggered it, forcing all
-    # scores to 7 and preventing the LLM from giving nuanced 4-6 scores.
-
     # Floor 5: Confirms resolution → minimum 8
-    # Covers: formal ("is resolved"), terse ("problem fixed"), typo ("its fixed")
     resolution_phrases = [
         "is resolved", "has been resolved", "been fixed", "is fixed",
         "was fixed", "was resolved", "is solved", "was solved",
@@ -1075,21 +1241,17 @@ def _enforce_scoring_floors(score: int, agent_input: str, issue: str) -> int:
         "completely resolved", "good to go",
         "i've fixed", "i fixed", "we've fixed", "we fixed",
         "it's fixed", "it's solved", "it's resolved",
-        # apostrophe-less
         "its fixed", "its resolved", "its solved", "its sorted", "its done",
         "its been fixed", "its been resolved",
-        # bare terse — "problem fixed", "issue fixed", "all fixed"
         "problem fixed", "issue fixed", "all fixed", "all resolved",
-        # bare without "is" — catches "get your issue resolved"
         "issue resolved", "problem resolved", "issue solved", "problem solved",
         "get resolved", "get fixed",
     ]
     if any(phrase in ai for phrase in resolution_phrases):
-        # Only give min 8 for CONFIRMED resolutions, not promises
         if not _is_promise_not_confirmation(agent_input):
             score = max(score, 8)
 
-    # Floor 6: Near-perfect reply (empathy + issue + action + timeline + resolution) → min 9
+    # Floor 6: Near-perfect reply → min 9
     if (has_empathy and names_issue and has_action and has_specific_timeline
             and any(phrase in ai for phrase in resolution_phrases)
             and not _is_promise_not_confirmation(agent_input)):
@@ -1107,7 +1269,7 @@ def score_and_tip(agent_input, customer_said, issue):
     raw     = _call_json(
         [{"role": "system", "content": _SCORER_SYSTEM},
          {"role": "user", "content": user_prompt}],
-        max_tokens=100,
+        max_tokens=150,                                                                # ← [FIX-12] was 100, more room for detailed reason
     )
     cleaned = _strip(raw)
 
@@ -1125,7 +1287,6 @@ def score_and_tip(agent_input, customer_said, issue):
         obj = json.loads(cleaned)
         score, tip, reason = _parse(obj)
         if tip and reason:
-            # [FIX-1] Enforce floors before returning
             score = _enforce_scoring_floors(score, agent_input, issue)
             return score, tip, reason
     except:
@@ -1149,27 +1310,33 @@ def score_and_tip(agent_input, customer_said, issue):
     rm = re.search(r'"?reason"?\s*:\s*"([^"]{8,})"', cleaned)
     score  = int(sm.group(1)) if sm else 5
     tip    = tm.group(1).strip() if tm else ""
-    reason = rm.group(1).strip() if rm else f"Score {score}/10 based on empathy and action shown."
+    reason = rm.group(1).strip() if rm else ""
 
-    # Layer 4: fallback LLM call for the tip
-    if not tip or len(tip) < 8:
-        tip = _call_json(
-            [{"role": "system",
-              "content": "You are a call centre coach. Provide ONE specific, "
-                         "actionable improvement suggestion in a single sentence. "
-                         "No labels or prefixes."},
-             {"role": "user",
-              "content": f"Issue: {issue}\n"
-                         f'Agent said: "{agent_input}"\n'
-                         f"Score: {score}/10\n"
-                         "What is the single most impactful thing this agent "
-                         "could do differently?"}],
-            max_tokens=35,
-        ).split(".")[0].strip() + "."
-    if not tip or len(tip) < 8:
-        tip = "Name the exact issue and offer a concrete action with a timeline."
+    # [FIX-14] Concise score-range-specific reason fallback
+    if not reason or len(reason) < 10:
+        if score >= 8:
+            reason = "Strong empathy with concrete action and timeline."
+        elif score >= 6:
+            reason = "Acknowledged the issue but lacked specific timeline or action."
+        elif score >= 4:
+            reason = "Vague response — missing empathy, action, or timeline."
+        elif score >= 2:
+            reason = "Did not address the customer's concern meaningfully."
+        else:
+            reason = "Off-topic or unhelpful response."
 
-    # [FIX-1] Enforce floors on all code paths
+    # [FIX-28] Programmatic tip fallback — no second LLM call (saves 1 call per turn)
+    if not tip or len(tip) < 8:
+        ai = agent_input.lower()
+        if not any(w in ai for w in ["sorry", "apologize", "understand", "frustrat"]):
+            tip = "Start with empathy — acknowledge the customer's frustration first."
+        elif not any(w in ai for w in ["fix", "resolve", "check", "look into", "investigate"]):
+            tip = "State a concrete action you will take to resolve this."
+        elif not re.search(r'\b(\d+\s*(hours?|minutes?|days?)|tomorrow|tonight)\b', ai):
+            tip = "Add a specific timeline so the customer knows when to expect resolution."
+        else:
+            tip = "Be more specific about what exactly you are doing to fix this."
+
     score = _enforce_scoring_floors(score, agent_input, issue)
     return max(0, min(10, score)), tip, reason
 
@@ -1192,11 +1359,12 @@ _BAD_IDEAL = [
 ]
 
 _FB_IDEALS = {
-    "positive": "I can see the {issue} on your account — I'm fixing it right "
-                "now and you'll see the resolution within 24 hours.",
-    "neutral":  "I've noted your {issue} and I'm escalating to our specialist "
-                "team — you'll get an update within 2 business days.",
-    "negative": "I'll look into your {issue} — give me a moment to check.",
+    "positive": "I completely understand how frustrating this {issue} must be — "
+                "let me pull up your account right now and get this sorted within the next 2 hours.",
+    "neutral":  "Thank you for bringing this {issue} to our attention. "
+                "Our team is looking into it and we will keep you updated on the progress.",
+    "negative": "These things can happen sometimes with {issue} situations. "
+                "You might want to try again later or check our FAQ page for common solutions.",
 }
 
 _STATIC_BAN_WORDS = [
@@ -1215,7 +1383,6 @@ class IdealGen:
             if not (bool(t) and len(t) >= 15
                     and not any(b.lower() in t.lower() for b in _BAD_IDEAL)):
                 return False
-            # Reject responses that invent names/numbers
             _INVENTED = [
                 "Mr.", "Mrs.", "Ms.", "Dr.", "Sir ", "Ma'am",
                 "Order #", "Ticket #", "Ref #", "REF-", "Case #",
@@ -1223,30 +1390,43 @@ class IdealGen:
             ]
             if any(inv in t for inv in _INVENTED):
                 return False
-            # Reject if contains a fabricated reference number pattern
             if re.search(r'[A-Z]{2,4}[-#]\d{3,}', t):
                 return False
+            # Reject if starts with same word as any previous ideal in avoid pool
+            first_word = t.strip().split()[0].lower().rstrip(",'\"") if t.strip() else ""
+            if first_word and avoid:
+                prev_first_words = [
+                    a.strip().split()[0].lower().rstrip(",'\"")
+                    for a in avoid if a and a.strip()
+                ]
+                # Allow up to 2 repeats of the same first word across all ideals
+                if prev_first_words.count(first_word) >= 2:
+                    return False
             return True
 
-        for attempt in range(3):
+        for attempt in range(2):                                                       # ← 2 attempts (was 4) — saves up to 6 LLM calls
             cand = _call_gen(
                 [{"role": "system", "content": _IDEAL_SYSTEM},
                  {"role": "user", "content": prompt}],
-                max_tokens=45,                                                         # ← [FIX-8] was 55
-                temp=temp + attempt * 0.05,
+                max_tokens=70,
+                temp=temp + attempt * 0.12,                                            # ← bigger jump on retry
             )
-            # [FIX-6] Strip wrapping quotation marks
             cand = cand.strip().strip('"').strip("'").strip('\u201c').strip('\u201d')
-            for pref in ["Agent:", "AGENT:", "Ideal:", "Response:"]:
+            for pref in ["Agent:", "AGENT:", "Ideal:", "Response:", "Positive:", "Neutral:", "Negative:"]:
                 if cand.lower().startswith(pref.lower()):
                     cand = cand[len(pref):].strip()
-            # [FIX-8] Hard 1-sentence trim
-            for sep in [". ", "! ", "? "]:
-                if sep in cand:
-                    cand = cand[:cand.index(sep) + 1]
-                    break
+            # Allow up to 2 sentences — trim at 3rd sentence boundary
+            sent_count = 0
+            trim_idx = len(cand)
+            for si, sc in enumerate(cand):
+                if sc in ".!?" and si < len(cand) - 1 and cand[si+1] == " ":
+                    sent_count += 1
+                    if sent_count >= 2:
+                        trim_idx = si + 1
+                        break
+            cand = cand[:trim_idx]
             cand = cand.strip()
-            if ok(cand) and not _sem_dup(cand, avoid, 0.55):
+            if ok(cand) and not _sem_dup(cand, avoid, 0.50):                           # ← tighter dedup (was 0.55)
                 return cand
         return fallback
 
@@ -1262,16 +1442,13 @@ class IdealGen:
                 continue
             words = r.strip().split()
             if words:
-                # Ban first word
                 w = words[0].lower().rstrip(",'\"")
                 if w and w not in seen:
                     seen.append(w)
             if len(words) >= 3:
-                # Ban first 3-word phrase
                 phrase = " ".join(words[:3]).lower().rstrip(",'\".")
                 if phrase and phrase not in seen:
                     seen.append(phrase)
-            # Ban key action verbs/phrases from the FULL response
             r_lower = r.lower()
             _action_extracts = [
                 "right now", "immediately", "within the hour",
@@ -1291,7 +1468,7 @@ class IdealGen:
             if bw not in seen:
                 seen.append(bw)
         return (
-            f"Do NOT use any of these words or phrases: {', '.join(seen[:20])}.\n"
+            f"Do NOT use any of these words or phrases: {', '.join(seen[:30])}.\n"
             if seen else ""
         )
 
@@ -1299,15 +1476,12 @@ class IdealGen:
         issue   = self.scenario["issue_type"]
         persona = self.scenario["customer_persona"]
 
-        # Build FULL conversation context (both sides) for ideal responses
-        # so they can see what was discussed and respond appropriately
         convo_lines = []
-        for m in agent_history[-8:]:  # last 4 exchanges (8 messages)
+        for m in agent_history[-8:]:
             role_label = "Agent" if m["role"] == "user" else "Customer"
             convo_lines.append(f"  {role_label}: {m['content'][:80]}")
         conversation = "\n".join(convo_lines) if convo_lines else "  (conversation just started)"
 
-        # Agent-only history for backward compat
         at   = [m["content"] for m in agent_history if m["role"] == "user"]
         said = "; ".join(at[-3:]) if at else "nothing yet"
 
@@ -1319,11 +1493,11 @@ class IdealGen:
         ban_clause = self._build_ban_clause()
         fb = {k: v.format(issue=issue) for k, v in _FB_IDEALS.items()}
 
-        # [FIX-7] Feed last 2 positive outputs into the positive prompt
         prev_pos_str = " / ".join(
             f'"{p[:50]}"' for p in self._pos_past[-2:] if p
         ) or "none yet"
 
+        # Generate positive first
         pos = self._one(
             _IDEAL_POSITIVE_TEMPLATE.format(
                 issue=issue, persona=persona,
@@ -1333,21 +1507,23 @@ class IdealGen:
             ),
             all_past_ideals, fb["positive"], 0.80,
         )
+        # Neutral avoids all past + this turn's positive
         neu = self._one(
             _IDEAL_NEUTRAL_TEMPLATE.format(
                 issue=issue, persona=persona,
                 customer_said=customer_said, conversation=conversation,
                 ban_clause=ban_clause,
             ),
-            all_past_ideals, fb["neutral"], 0.88,
+            all_past_ideals + [pos], fb["neutral"], 0.88,
         )
+        # Negative avoids all past + this turn's positive AND neutral
         neg = self._one(
             _IDEAL_NEGATIVE_TEMPLATE.format(
                 issue=issue, persona=persona,
                 customer_said=customer_said, conversation=conversation,
                 ban_clause=ban_clause,
             ),
-            all_past_ideals, fb["negative"], 0.93,
+            all_past_ideals + [pos, neu], fb["negative"], 0.93,
         )
 
         self._pos_past = (self._pos_past + [pos])[-5:]
@@ -1452,14 +1628,14 @@ _WIN_KW = [
     "your issue is solved", "issue is solved", "problem is solved",
     "has been solved", "it's solved", "it is solved",
     "all sorted", "good to go",
-    # apostrophe-less
     "its fixed", "its resolved", "its solved", "its sorted", "its done",
     "its been fixed", "its been resolved", "its been sorted",
-    # bare terse
     "problem fixed", "issue fixed", "all fixed", "all resolved", "all done",
-    # bare without "is"
     "issue resolved", "problem resolved", "issue solved", "problem solved",
     "get resolved", "get fixed", "get sorted",
+    "has been delivered", "is delivered", "it is delivered",
+    "package delivered", "order delivered", "been delivered",
+    "successfully delivered", "already delivered",
 ]
 
 
@@ -1470,12 +1646,15 @@ def _win_loss(s):
     if n == 0:
         return None, False
 
-    # Direct resolution: agent used resolution keyword + mood is high + NOT a promise
-    if n >= 1 and mood >= 8:
+    if n >= 1 and mood >= 7:
         last_agent = s["turn_log"][-1]["agent"]
+        last_customer = s["turn_log"][-1]["customer"].lower()
         if (any(kw in last_agent.lower() for kw in _WIN_KW)
                 and not _is_promise_not_confirmation(last_agent)):
-            return "win", True
+            _REJECTION = ["not good", "terrible", "useless", "don't believe",
+                          "prove it", "doubt", "liar", "unacceptable", "worst"]
+            if not any(rw in last_customer for rw in _REJECTION):
+                return "win", True
 
     ra = sum(scores[-5:]) / min(n, 5)
     if n >= 2 and mood >= 8 and ra >= 5.5 and scores[-1] >= 6:
@@ -1498,7 +1677,6 @@ def _win_loss(s):
 #  BACKGROUND WORKER
 # ==============================================================================
 
-# [FIX-9] Resolution bypass keywords — tightened, no bare single words
 _RESOLUTION_BYPASS_KW = [
     "issue is resolved", "issue has been resolved", "issue was resolved",
     "problem is fixed", "problem has been fixed", "problem was fixed",
@@ -1515,13 +1693,10 @@ _RESOLUTION_BYPASS_KW = [
     "problem is solved", "problem has been solved", "problem was solved",
     "it's solved", "it is solved", "has been solved",
     "i've fixed", "i fixed", "we've fixed", "we fixed",
-    # apostrophe-less
     "its fixed", "its resolved", "its solved", "its sorted", "its done",
     "its been fixed", "its been resolved", "its been sorted",
     "thats fixed", "thats sorted", "thats resolved",
-    # bare terse
     "problem fixed", "issue fixed", "all fixed", "all resolved", "all done",
-    # bare without "is"
     "issue resolved", "problem resolved", "issue solved", "problem solved",
     "get resolved", "get fixed", "get sorted",
 ]
@@ -1551,24 +1726,34 @@ def _do_work(session_id: str, agent_input: str):
             "No previous reply.",
         )
 
-        # Resolution bypass — only on CONFIRMED fixes (not promises)
         agent_resolved_flag = (
             any(kw in agent_input.lower() for kw in _RESOLUTION_BYPASS_KW)
             and not _is_promise_not_confirmation(agent_input)
         )
 
         if agent_resolved_flag:
-            score  = 9
-            tip    = "Excellent resolution — the agent confirmed the fix clearly and confidently."
-            reason = "Agent explicitly confirmed the issue is resolved — this is the ideal outcome."
-            # Gradual mood boost, not instant jump
-            s["sim"].mood    = min(10, s["sim"].mood + 2)
-            s["sim"]._streak = 1
+            current_mood = s["sim"].mood
+            if current_mood <= 3:
+                score  = 7
+                tip    = "Good resolution statement, but the customer is still upset — rebuild trust first."
+                reason = "Claimed resolution while customer mood is still low."
+                s["sim"].mood = min(10, current_mood + 1)
+            elif current_mood <= 5:
+                score  = 8
+                tip    = "Resolution confirmed. Customer is cautious — follow up to ensure satisfaction."
+                reason = "Resolution stated. Customer may need one more reassurance."
+                s["sim"].mood = min(10, current_mood + 2)
+                s["sim"]._streak = 1
+            else:
+                score  = 9
+                tip    = "Excellent resolution — the agent confirmed the fix clearly and confidently."
+                reason = "Agent confirmed resolution with good customer rapport."
+                s["sim"].mood = min(10, current_mood + 2)
+                s["sim"]._streak = 1
         else:
             score, tip, reason = s["coach"].evaluate(agent_input, last_customer)
 
         customer_reply = s["sim"].speak(agent_input, score=score)
-        ideals         = s["ideal"].generate(customer_reply, s["sim"].history)
 
         s["turn_log"].append({
             "turn": turn, "agent": agent_input,
@@ -1580,8 +1765,10 @@ def _do_work(session_id: str, agent_input: str):
             db.bump(s["scenario"]["id"])
 
         mood = s["sim"].mood
-        print(f"[T{turn}] done — score={score} mood={mood}", flush=True)
+        print(f"[T{turn}] score={score} mood={mood} — sending partial, generating ideals...", flush=True)
 
+        # ── PHASE 1: Send score + customer reply IMMEDIATELY ──
+        # User sees the response right away, ideals come later
         _ws_send(session_id, {
             "type":            "result",
             "customer_reply":  customer_reply,
@@ -1589,12 +1776,23 @@ def _do_work(session_id: str, agent_input: str):
             "tip":             tip,
             "reason":          reason,
             "resolved":        resolved,
-            "ideal":           ideals["ideal"],
-            "ideals":          ideals,
+            "ideal":           "",
+            "ideals":          {"positive": "", "neutral": "", "negative": "", "ideal": ""},
             "outcome":         outcome,
             "customer_mood":   mood,
             "mood_label":      _mood_label(mood),
             "turns_remaining": max(0, MAX_TURNS - s["turn_count"]),
+        })
+
+        # ── PHASE 2: Generate ideals and push them as a follow-up ──
+        ideals = s["ideal"].generate(customer_reply, s["sim"].history)
+        print(f"[T{turn}] ideals done — sending update", flush=True)
+
+        _ws_send(session_id, {
+            "type":   "ideals_update",
+            "turn":   turn,
+            "ideal":  ideals["ideal"],
+            "ideals": ideals,
         })
 
     except Exception as e:
@@ -1604,13 +1802,10 @@ def _do_work(session_id: str, agent_input: str):
 
 
 # ── Feature 1: LLM scenario generation tracking ──────────────────────────────
-_generated_scenario_history: list = []   # keeps last N generated to avoid repeats
+_generated_scenario_history: list = []
 
 
 def _generate_scenario_via_llm() -> dict:
-    """Call LLM to generate a unique scenario. Returns dict with
-    issue_type, customer_persona, short_description."""
-    # Build exclusion clause from recent history
     recent = _generated_scenario_history[-10:]
     if recent:
         issues_seen = [s.get("issue_type", "") for s in recent]
@@ -1630,7 +1825,6 @@ def _generate_scenario_via_llm() -> dict:
     )
     cleaned = _strip(raw)
 
-    # Parse JSON with fallback
     parsed = None
     try:
         parsed = json.loads(cleaned)
@@ -1643,22 +1837,19 @@ def _generate_scenario_via_llm() -> dict:
                 pass
 
     if not parsed or "issue_type" not in parsed:
-        # Fallback: generate a random combo from existing lists
         parsed = {
             "issue_type": random.choice(ISSUES),
             "customer_persona": random.choice(PERSONAS),
             "short_description": (
-                f"A {random.choice(PERSONAS).lower()} customer calls about "
+                f"A {random.choice(PERSONAS).lower()} customer contacts support about "
                 f"a {random.choice(ISSUES).lower()} issue."
             ),
         }
 
-    # Ensure all fields exist
     parsed.setdefault("customer_persona", random.choice(PERSONAS))
     parsed.setdefault("short_description",
                       f"{parsed['customer_persona']} customer with {parsed['issue_type']} problem.")
 
-    # Track to avoid future repeats
     _generated_scenario_history.append(parsed)
     if len(_generated_scenario_history) > 50:
         _generated_scenario_history[:] = _generated_scenario_history[-30:]
@@ -1669,13 +1860,10 @@ def _generate_scenario_via_llm() -> dict:
 # ── Feature 2: Edit message background worker ────────────────────────────────
 
 def _do_edit_work(session_id: str, turn_number: int, new_agent_input: str):
-    """Replays a single turn with an edited agent message.
-    Truncates all turns after the edited one and pushes fresh results."""
     try:
         s = sessions[session_id]
         print(f"[EDIT T{turn_number}] processing...", flush=True)
 
-        # Wait up to 8s for WebSocket
         import time as _time
         for _ in range(80):
             if session_id in _ws_queues:
@@ -1687,20 +1875,13 @@ def _do_edit_work(session_id: str, turn_number: int, new_agent_input: str):
 
         _ws_send(session_id, {"type": "thinking", "turn": turn_number})
 
-        # ── Roll back session state to just before the edited turn ────────
-        # 1. Truncate turn_log: keep only turns before the edited one
         s["turn_log"] = [t for t in s["turn_log"] if t["turn"] < turn_number]
         s["turn_count"] = turn_number - 1
 
-        # 2. Rewind simulator history to match
-        #    Each turn adds 2 entries: user (agent msg) + assistant (customer reply)
-        #    So for turn N, we keep (N-1)*2 entries
         entries_to_keep = (turn_number - 1) * 2
         s["sim"].history = s["sim"].history[:entries_to_keep]
         s["sim"].turn = turn_number - 1
 
-        # 3. Recalculate mood from surviving scores
-        #    Reset to initial mood, then replay all surviving score shifts
         base_mood = max(1, 7 - s["difficulty"])
         if s["scenario"].get("issue_type", "").lower() in CustomerSimulator._SEVERE_ISSUES:
             base_mood = max(1, base_mood - 1)
@@ -1709,17 +1890,14 @@ def _do_edit_work(session_id: str, turn_number: int, new_agent_input: str):
         for t in s["turn_log"]:
             s["sim"]._shift(t["score"])
 
-        # 4. Rewind ideal generator past history
-        #    Each turn adds 3 entries (pos, neu, neg) to self.past
         s["ideal"].past = s["ideal"].past[:(turn_number - 1) * 3]
         keep_ideal = turn_number - 1
         s["ideal"]._pos_past = s["ideal"]._pos_past[:keep_ideal]
         s["ideal"]._neu_past = s["ideal"]._neu_past[:keep_ideal]
         s["ideal"]._neg_past = s["ideal"]._neg_past[:keep_ideal]
 
-        # ── Now replay the edited turn (same logic as _do_work) ───────────
         s["turn_count"] += 1
-        turn = s["turn_count"]  # should equal turn_number
+        turn = s["turn_count"]
 
         last_customer = next(
             (m["content"] for m in reversed(s["sim"].history)
@@ -1727,23 +1905,34 @@ def _do_edit_work(session_id: str, turn_number: int, new_agent_input: str):
             "No previous reply.",
         )
 
-        # Resolution bypass check — only confirmed fixes, not promises
         agent_resolved_flag = (
             any(kw in new_agent_input.lower() for kw in _RESOLUTION_BYPASS_KW)
             and not _is_promise_not_confirmation(new_agent_input)
         )
 
         if agent_resolved_flag:
-            score  = 9
-            tip    = "Excellent resolution — the agent confirmed the fix clearly and confidently."
-            reason = "Agent explicitly confirmed the issue is resolved — this is the ideal outcome."
-            s["sim"].mood    = min(10, s["sim"].mood + 2)
-            s["sim"]._streak = 1
+            current_mood = s["sim"].mood
+            if current_mood <= 3:
+                score  = 7
+                tip    = "Good resolution statement, but the customer is still upset — rebuild trust first."
+                reason = "Claimed resolution while customer mood is still low."
+                s["sim"].mood = min(10, current_mood + 1)
+            elif current_mood <= 5:
+                score  = 8
+                tip    = "Resolution confirmed. Customer is cautious — follow up to ensure satisfaction."
+                reason = "Resolution stated. Customer may need one more reassurance."
+                s["sim"].mood = min(10, current_mood + 2)
+                s["sim"]._streak = 1
+            else:
+                score  = 9
+                tip    = "Excellent resolution — the agent confirmed the fix clearly and confidently."
+                reason = "Agent confirmed resolution with good customer rapport."
+                s["sim"].mood = min(10, current_mood + 2)
+                s["sim"]._streak = 1
         else:
             score, tip, reason = s["coach"].evaluate(new_agent_input, last_customer)
 
         customer_reply = s["sim"].speak(new_agent_input, score=score)
-        ideals         = s["ideal"].generate(customer_reply, s["sim"].history)
 
         s["turn_log"].append({
             "turn": turn, "agent": new_agent_input,
@@ -1755,8 +1944,9 @@ def _do_edit_work(session_id: str, turn_number: int, new_agent_input: str):
             db.bump(s["scenario"]["id"])
 
         mood = s["sim"].mood
-        print(f"[EDIT T{turn}] done — score={score} mood={mood}", flush=True)
+        print(f"[EDIT T{turn}] score={score} mood={mood} — sending partial, generating ideals...", flush=True)
 
+        # PHASE 1: Send edit result immediately (no ideals yet)
         _ws_send(session_id, {
             "type":            "edit_result",
             "edited_turn":     turn_number,
@@ -1765,12 +1955,23 @@ def _do_edit_work(session_id: str, turn_number: int, new_agent_input: str):
             "tip":             tip,
             "reason":          reason,
             "resolved":        resolved,
-            "ideal":           ideals["ideal"],
-            "ideals":          ideals,
+            "ideal":           "",
+            "ideals":          {"positive": "", "neutral": "", "negative": "", "ideal": ""},
             "outcome":         outcome,
             "customer_mood":   mood,
             "mood_label":      _mood_label(mood),
             "turns_remaining": max(0, MAX_TURNS - s["turn_count"]),
+        })
+
+        # PHASE 2: Generate ideals and push update
+        ideals = s["ideal"].generate(customer_reply, s["sim"].history)
+        print(f"[EDIT T{turn}] ideals done — sending update", flush=True)
+
+        _ws_send(session_id, {
+            "type":   "ideals_update",
+            "turn":   turn,
+            "ideal":  ideals["ideal"],
+            "ideals": ideals,
         })
 
     except Exception as e:
@@ -1929,12 +2130,9 @@ def get_report(session_id: str):
 
 @app.post("/generate-scenario")
 def generate_scenario(req: GenerateScenarioRequest = None):
-    """Calls the LLM to generate a completely new, random scenario each time.
-    Returns the full scenario (for session creation) and a short UI description."""
     difficulty = max(1, min(5, req.difficulty if req else 1))
     generated  = _generate_scenario_via_llm()
 
-    # Build a scenario object compatible with the existing session structure
     scenario = {
         "id":               len(db.data) + len(_generated_scenario_history) + 100,
         "customer_persona": generated["customer_persona"],
@@ -1942,7 +2140,6 @@ def generate_scenario(req: GenerateScenarioRequest = None):
         "difficulty":       difficulty,
     }
 
-    # Create a full session with this generated scenario
     sid = str(uuid.uuid4())
     sessions[sid] = {
         "sim":        CustomerSimulator(scenario, difficulty=difficulty),
@@ -1970,12 +2167,7 @@ def generate_scenario(req: GenerateScenarioRequest = None):
 
 @app.post("/custom-scenario")
 def custom_scenario(req: CustomScenarioRequest):
-    """Create a session with a user-defined scenario. The user types the issue
-    and optionally a persona and description. The customer agent will converse
-    based on this custom scenario."""
     difficulty = max(1, min(5, req.difficulty))
-
-    # Use provided persona or pick a random one
     persona = req.persona.strip() if req.persona and req.persona.strip() else random.choice(PERSONAS)
 
     scenario = {
@@ -1985,7 +2177,6 @@ def custom_scenario(req: CustomScenarioRequest):
         "difficulty":       difficulty,
     }
 
-    # Create a full session
     sid = str(uuid.uuid4())
     sessions[sid] = {
         "sim":        CustomerSimulator(scenario, difficulty=difficulty),
@@ -2014,8 +2205,6 @@ def custom_scenario(req: CustomScenarioRequest):
 
 @app.post("/edit-message")
 def edit_message(req: EditMessageRequest):
-    """Edit a previously sent agent reply. Truncates all downstream turns and
-    regenerates the customer response for the edited turn. Result pushed via WS."""
     if req.session_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
     s = sessions[req.session_id]
@@ -2045,15 +2234,12 @@ def edit_message(req: EditMessageRequest):
 
 @app.post("/redo")
 def redo_conversation(req: RedoRequest):
-    """Restart the current conversation from scratch using the SAME scenario.
-    All turns are cleared; a fresh session state is created."""
     if req.session_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
     old = sessions[req.session_id]
     scenario   = old["scenario"]
     difficulty = old["difficulty"]
 
-    # Reset all session state — same scenario, fresh everything
     sessions[req.session_id] = {
         "sim":        CustomerSimulator(scenario, difficulty=difficulty),
         "coach":      AssistantCoach(scenario["issue_type"]),
@@ -2067,7 +2253,6 @@ def redo_conversation(req: RedoRequest):
 
     starting_mood = sessions[req.session_id]["sim"].mood
 
-    # Notify via WebSocket if connected
     _ws_send(req.session_id, {
         "type":           "redo",
         "message":        "Conversation restarted with the same scenario.",
