@@ -94,15 +94,18 @@ export class CoachService implements OnDestroy {
       .pipe(timeout(8000), catchError(err => throwError(() => err)));
   }
 
-  startSession(difficulty: number = 1): Observable<any> {
-    return this.http.get<any>(`${this.api}/scenario?difficulty=${difficulty}`)
-      .pipe(timeout(15000), catchError(err => throwError(() => err)));
+  startSession(difficulty: number = 1, agentId?: string | null): Observable<any> {
+    return this.http.post<any>(
+      `${this.api}/scenario`,
+      { difficulty, agent_id: agentId ?? null },
+      { headers: this.jsonHeaders }
+    ).pipe(timeout(15000), catchError(err => throwError(() => err)));
   }
 
-  sendMessage(sessionId: string, agentInput: string): Observable<any> {
+  sendMessage(sessionId: string, agentInput: string, agentId?: string | null): Observable<any> {
     return this.http.post<any>(
       `${this.api}/message`,
-      { session_id: sessionId, agent_input: agentInput },
+      { session_id: sessionId, agent_input: agentInput, agent_id: agentId ?? null },
       { headers: this.jsonHeaders }
     ).pipe(timeout(10000), catchError(err => throwError(() => err)));
   }
@@ -113,46 +116,75 @@ export class CoachService implements OnDestroy {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  //  NEW — Feature 1: LLM Scenario Generator
+  //  Feature 1: LLM Scenario Generator
   // ══════════════════════════════════════════════════════════════════════════
-  generateScenario(difficulty: number = 1): Observable<any> {
+  generateScenario(difficulty: number = 1, agentId?: string | null): Observable<any> {
     return this.http.post<any>(
       `${this.api}/generate-scenario`,
-      { difficulty },
+      { difficulty, agent_id: agentId ?? null },
       { headers: this.jsonHeaders }
     ).pipe(timeout(60000), catchError(err => throwError(() => err)));
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  //  NEW — Feature 1b: Custom User-Defined Scenario
+  //  Feature 1b: Custom User-Defined Scenario
   // ══════════════════════════════════════════════════════════════════════════
-  customScenario(issueType: string, persona: string, description: string, difficulty: number = 1): Observable<any> {
+  customScenario(
+    issueType: string, persona: string, description: string,
+    difficulty: number = 1, agentId?: string | null,
+  ): Observable<any> {
     return this.http.post<any>(
       `${this.api}/custom-scenario`,
-      { issue_type: issueType, persona, description, difficulty },
+      { issue_type: issueType, persona, description, difficulty, agent_id: agentId ?? null },
       { headers: this.jsonHeaders }
     ).pipe(timeout(15000), catchError(err => throwError(() => err)));
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  //  NEW — Feature 2: Edit Previous Agent Reply
+  //  Similar Scenario (practise a variant of the same domain)
   // ══════════════════════════════════════════════════════════════════════════
-  editMessage(sessionId: string, turnNumber: number, newAgentInput: string): Observable<any> {
+  similarScenario(sessionId: string, difficulty: number = 1, agentId?: string | null): Observable<any> {
     return this.http.post<any>(
-      `${this.api}/edit-message`,
-      { session_id: sessionId, turn_number: turnNumber, new_agent_input: newAgentInput },
+      `${this.api}/similar-scenario`,
+      { session_id: sessionId, difficulty, agent_id: agentId ?? null },
       { headers: this.jsonHeaders }
     ).pipe(timeout(60000), catchError(err => throwError(() => err)));
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  //  NEW — Feature 3: Redo Conversation
+  //  Feature 2: Edit Previous Agent Reply
   // ══════════════════════════════════════════════════════════════════════════
-  redoConversation(sessionId: string): Observable<any> {
+  editMessage(sessionId: string, turnNumber: number, newAgentInput: string,
+              agentId?: string | null): Observable<any> {
+    return this.http.post<any>(
+      `${this.api}/edit-message`,
+      { session_id: sessionId, turn_number: turnNumber,
+        new_agent_input: newAgentInput, agent_id: agentId ?? null },
+      { headers: this.jsonHeaders }
+    ).pipe(timeout(60000), catchError(err => throwError(() => err)));
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  Feature 3: Redo Conversation
+  // ══════════════════════════════════════════════════════════════════════════
+  redoConversation(sessionId: string, agentId?: string | null): Observable<any> {
     return this.http.post<any>(
       `${this.api}/redo`,
-      { session_id: sessionId },
+      { session_id: sessionId, agent_id: agentId ?? null },
       { headers: this.jsonHeaders }
     ).pipe(timeout(15000), catchError(err => throwError(() => err)));
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  Finalize a session (best-effort persistence on tab close)
+  // ══════════════════════════════════════════════════════════════════════════
+  finalizeSession(sessionId: string): void {
+    try {
+      const url = `${this.api}/session/${sessionId}/finalize`;
+      const blob = new Blob([JSON.stringify({})], { type: 'application/json' });
+      navigator.sendBeacon(url, blob);
+    } catch {
+      // best-effort; ignore
+    }
   }
 }

@@ -2977,3 +2977,190 @@ $amber: #F59E0B;
   background: #1D4ED8;
   transform: translateY(0);
 }
+
+/* ── Point-wise summary list ─────────────────────────────────────────────── */
+.summary-points {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+
+  li {
+    position: relative;
+    padding: 8px 12px 8px 28px;
+    background: rgba(255, 255, 255, .04);
+    border-left: 3px solid #3DBE6E;
+    border-radius: 6px;
+    font-size: 13.5px;
+    color: rgba(255, 255, 255, .9);
+    line-height: 1.55;
+  }
+
+  li::before {
+    content: "▸";
+    position: absolute;
+    left: 10px;
+    top: 8px;
+    color: #3DBE6E;
+    font-weight: 700;
+  }
+}
+
+/* ── Performance Breakdown — 5-dimension parameter bars ─────────────────── */
+.param-list {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.param-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.param-label {
+  flex: 0 0 200px;
+  font-size: 13px;
+  font-weight: 600;
+  color: $navy;
+}
+
+.param-track {
+  flex: 1;
+  height: 10px;
+  background: $border;
+  border-radius: 10px;
+  overflow: hidden;
+  min-width: 120px;
+}
+
+.param-fill {
+  height: 100%;
+  border-radius: 10px;
+  transition: width .6s ease;
+
+  &.high { background: $green; }
+  &.mid  { background: $amber; }
+  &.low  { background: #EF4444; }
+}
+
+.param-num {
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 48px;
+  text-align: right;
+
+  &.high { color: $green; }
+  &.mid  { color: $amber; }
+  &.low  { color: #EF4444; }
+}
+
+@media (max-width: 600px) {
+  .param-label { flex: 1 1 100%; }
+}
+
+/* ── Practice Similar Scenario button ────────────────────────────────────── */
+.btn-similar-scenario {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  background: linear-gradient(135deg, #6366F1, #8B5CF6);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter .2s, transform .1s, box-shadow .2s;
+  box-shadow: 0 1px 4px rgba(99, 102, 241, .25);
+}
+
+.btn-similar-scenario:hover:not(:disabled) {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(99, 102, 241, .35);
+}
+
+.btn-similar-scenario:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn-similar-scenario:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+/* ── Nav agent pill + history/logout links ──────────────────────────────── */
+.nav-agent-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: $green-light;
+  color: $green-dark;
+  border: 1px solid rgba(61, 190, 110, .35);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .2px;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(46, 160, 85, .08);
+  transition: background .15s, border-color .15s, transform .1s;
+
+  &:hover {
+    background: #DCF4E6;
+    border-color: $green;
+    transform: translateY(-1px);
+  }
+}
+
+.btn-nav-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: $white;
+  color: $navy;
+  border: 1.5px solid $border;
+  padding: 7px 13px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  letter-spacing: .15px;
+  transition: background .15s, color .15s, border-color .15s, transform .1s, box-shadow .15s;
+
+  &:hover:not(:disabled) {
+    background: $green-light;
+    color: $green-dark;
+    border-color: $green;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(46, 160, 85, .12);
+  }
+
+  &:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow: none;
+  }
+
+  &:disabled {
+    opacity: .5;
+    cursor: not-allowed;
+  }
+}
+
+/* Logout — same shape as History but red-tinted on hover for clarity */
+.btn-nav-link:last-of-type {
+  &:hover:not(:disabled) {
+    background: #FEF2F2;
+    color: #991B1B;
+    border-color: #FCA5A5;
+    box-shadow: 0 2px 6px rgba(239, 68, 68, .12);
+  }
+}

@@ -30,7 +30,10 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
 import uuid, json, random, re, os, threading, asyncio, requests as _http
+
+import db as sqldb  # SQLite persistence (separate from the in-memory ScenarioDB instance below)
 
 app = FastAPI()
 app.add_middleware(
@@ -38,6 +41,9 @@ app.add_middleware(
     allow_origins=["*"], allow_credentials=False,
     allow_methods=["*"], allow_headers=["*"],
 )
+
+# Initialize SQLite (idempotent)
+sqldb.init_db()
 
 # ── LM Studio ─────────────────────────────────────────────────────────────────
 LM_STUDIO_URL = os.environ.get("LM_STUDIO_URL", "http://127.0.0.1:1234")
@@ -395,12 +401,9 @@ _IDEAL_NEGATIVE_TEMPLATE = (
 # ── Report generator — [FIX-10] chat-based ───────────────────────────────────
 
 _REPORT_SYSTEM = (
-    "You are a call centre training manager writing a performance review "
-    "for a chat-based customer support session. "
-    "Tone: professional, constructive, specific.\n\n"
-    "Write 3 short paragraphs, 150 words max. Plain text only — no markdown, "
-    "no bullets. Quote the agent's actual words as evidence. "
-    "Balance praise with improvement areas."
+    "You are a call centre training manager writing a performance review for "
+    "a chat-based customer support session. Tone: professional, constructive, specific. "
+    "Output ONLY valid JSON, no markdown, no extra text."
 )
 
 _REPORT_USER_TEMPLATE = (
@@ -410,10 +413,44 @@ _REPORT_USER_TEMPLATE = (
     'Best turn: #{best_turn} (score {best_score}) — "{best_agent}"\n'
     'Worst turn: #{worst_turn} (score {worst_score}) — "{worst_agent}"\n\n'
     "TRANSCRIPT:\n{transcript}\n\n"
-    "Write 3 paragraphs:\n"
-    "1. OVERALL: score, trend, resolution status.\n"
-    "2. STRENGTHS: cite best turn, explain why it worked.\n"
-    "3. IMPROVEMENTS: cite worst turn, suggest better phrasing."
+    "Return ONLY this JSON, with 5-7 concise bullet points (each 1 sentence, max 25 words):\n"
+    '{{\n'
+    '  "summary_points": [\n'
+    '    "<overall performance, score, trend, outcome>",\n'
+    '    "<biggest strength — quote the agent\'s actual words>",\n'
+    '    "<biggest weakness — quote the agent\'s actual words>",\n'
+    '    "<specific improvement suggestion>",\n'
+    '    "<additional observation or coaching note>"\n'
+    '  ]\n'
+    '}}'
+)
+
+
+# ── Parameter scoring (5 dimensions for diversified report breakdown) ────────
+
+_PARAM_SCORE_SYSTEM = (
+    "You are a call centre QA analyst. Output ONLY valid JSON, no markdown."
+)
+
+_PARAM_SCORE_USER_TEMPLATE = (
+    "Rate the agent's performance across 5 dimensions (each on a 0-10 scale).\n\n"
+    "Scenario: {persona} — {issue}\n"
+    "Average per-turn empathy score: {avg}/10\n"
+    "TRANSCRIPT:\n{transcript}\n\n"
+    "Definitions:\n"
+    "- professionalism: courtesy, tone, language quality\n"
+    "- customer_satisfaction: how content the customer was by the end\n"
+    "- problem_resolution: did the agent actually solve the issue\n"
+    "- empathy: acknowledged feelings, showed understanding\n"
+    "- communication_clarity: clear, specific, easy to follow\n\n"
+    "Return ONLY this JSON:\n"
+    '{{\n'
+    '  "professionalism": <0-10>,\n'
+    '  "customer_satisfaction": <0-10>,\n'
+    '  "problem_resolution": <0-10>,\n'
+    '  "empathy": <0-10>,\n'
+    '  "communication_clarity": <0-10>\n'
+    '}}'
 )
 
 
@@ -428,6 +465,23 @@ _SCENARIO_GEN_SYSTEM = (
 _SCENARIO_GEN_USER_TEMPLATE = (
     "Generate a unique call centre scenario.\n"
     "{exclusion_clause}"
+    "Return ONLY this JSON:\n"
+    '{{\n'
+    '  "issue_type": "<specific problem, 3-6 words>",\n'
+    '  "customer_persona": "<personality, 2-5 words>",\n'
+    '  "short_description": "<1-2 sentence summary for trainee>"\n'
+    '}}'
+)
+
+_SIMILAR_SCENARIO_GEN_USER_TEMPLATE = (
+    "Generate a NEW call centre scenario SIMILAR to this one but DIFFERENT in specifics:\n"
+    "Original issue: {orig_issue}\n"
+    "Original persona: {orig_persona}\n\n"
+    "Rules:\n"
+    "- Same general DOMAIN (billing / shipping / technical / account / warranty / etc.) as the original\n"
+    "- DIFFERENT specific issue (e.g., if original was 'late delivery', try 'wrong item shipped')\n"
+    "- DIFFERENT persona type\n"
+    "- Comparable difficulty\n\n"
     "Return ONLY this JSON:\n"
     '{{\n'
     '  "issue_type": "<specific problem, 3-6 words>",\n'
@@ -1578,15 +1632,94 @@ class ReportGen:
             transcript=transcript,
         )
 
-        text = _call_gen(
+        raw = _call_json(
             [{"role": "system", "content": _REPORT_SYSTEM},
              {"role": "user", "content": user_prompt}],
-            max_tokens=350, temp=0.5,
+            max_tokens=400,
         )
+        points = self._parse_points(raw, best, worst, avg, trend, resolved)
+        report_text = "  ".join(points)
+
+        # Parameter scoring (5 dimensions)
+        param_user = _PARAM_SCORE_USER_TEMPLATE.format(
+            persona=self.scenario["customer_persona"],
+            issue=self.scenario["issue_type"],
+            avg=avg,
+            transcript=transcript,
+        )
+        param_raw = _call_json(
+            [{"role": "system", "content": _PARAM_SCORE_SYSTEM},
+             {"role": "user", "content": param_user}],
+            max_tokens=140,
+        )
+        parameters = self._parse_parameters(param_raw, avg)
+
         return {
             "average_score": avg, "total_turns": len(turn_log), "trend": trend,
-            "best_turn": best, "worst_turn": worst, "report_text": text,
+            "best_turn": best, "worst_turn": worst,
+            "report_text": report_text,
+            "report_points": points,
+            "parameters": parameters,
         }
+
+    @staticmethod
+    def _parse_points(raw, best, worst, avg, trend, resolved):
+        cleaned = _strip(raw or "")
+        points = []
+        try:
+            obj = json.loads(cleaned)
+            points = obj.get("summary_points") or []
+        except Exception:
+            m = re.search(r'\{.*\}', cleaned, re.DOTALL)
+            if m:
+                try:
+                    obj = json.loads(m.group(0))
+                    points = obj.get("summary_points") or []
+                except Exception:
+                    points = []
+
+        points = [str(p).strip() for p in points if str(p).strip()]
+        points = [p for p in points if len(p.split()) <= 40]
+
+        if not points:
+            outcome_word = "resolved" if resolved else "not resolved"
+            points = [
+                f"Overall: average score {avg}/10, trend {trend}, issue {outcome_word}.",
+                f'Strongest moment was turn {best["turn"]} ({best["score"]}/10): "{best["agent"][:80]}".',
+                f'Weakest moment was turn {worst["turn"]} ({worst["score"]}/10): "{worst["agent"][:80]}".',
+                "Focus on combining empathy, a concrete action, and a specific timeline in each reply.",
+                "Avoid generic filler — name the issue and confirm what you are doing about it.",
+            ]
+        return points[:8]
+
+    @staticmethod
+    def _parse_parameters(raw, avg):
+        cleaned = _strip(raw or "")
+        parsed = None
+        try:
+            parsed = json.loads(cleaned)
+        except Exception:
+            m = re.search(r'\{.*\}', cleaned, re.DOTALL)
+            if m:
+                try:
+                    parsed = json.loads(m.group(0))
+                except Exception:
+                    parsed = None
+
+        keys = [
+            "professionalism", "customer_satisfaction", "problem_resolution",
+            "empathy", "communication_clarity",
+        ]
+        default = max(0, min(10, int(round(avg))))
+        out = {}
+        for k in keys:
+            v = (parsed or {}).get(k, default)
+            try:
+                v = int(round(float(v)))
+            except Exception:
+                v = default
+            out[k] = max(0, min(10, v))
+        return out
 
 
 # ==============================================================================
@@ -1764,6 +1897,21 @@ def _do_work(session_id: str, agent_input: str):
         if resolved:
             db.bump(s["scenario"]["id"])
 
+        # Persist a summary stub the moment a session reaches terminal outcome.
+        # Fast: no LLM call. Report-derived fields are filled in later via /report.
+        if outcome in ("win", "loss") and s.get("agent_id"):
+            with s["persist_lock"]:
+                if not s["persisted"]:
+                    try:
+                        sqldb.record_session_terminal(
+                            session_id, s["agent_id"], s["scenario"], s["difficulty"],
+                            outcome, s["turn_log"],
+                            s.get("created_via"), s.get("parent_session_id"),
+                        )
+                        s["persisted"] = True
+                    except Exception as _e:
+                        print(f"[DB] terminal persist failed: {_e}", flush=True)
+
         mood = s["sim"].mood
         print(f"[T{turn}] score={score} mood={mood} — sending partial, generating ideals...", flush=True)
 
@@ -1845,6 +1993,50 @@ def _generate_scenario_via_llm() -> dict:
                 f"a {random.choice(ISSUES).lower()} issue."
             ),
         }
+
+    parsed.setdefault("customer_persona", random.choice(PERSONAS))
+    parsed.setdefault("short_description",
+                      f"{parsed['customer_persona']} customer with {parsed['issue_type']} problem.")
+
+    _generated_scenario_history.append(parsed)
+    if len(_generated_scenario_history) > 50:
+        _generated_scenario_history[:] = _generated_scenario_history[-30:]
+
+    return parsed
+
+
+def _generate_similar_scenario_via_llm(orig_issue: str, orig_persona: str) -> dict:
+    raw = _call_json(
+        [{"role": "system", "content": _SCENARIO_GEN_SYSTEM},
+         {"role": "user", "content": _SIMILAR_SCENARIO_GEN_USER_TEMPLATE.format(
+             orig_issue=orig_issue, orig_persona=orig_persona)}],
+        max_tokens=180,
+    )
+    cleaned = _strip(raw)
+
+    parsed = None
+    try:
+        parsed = json.loads(cleaned)
+    except Exception:
+        m = re.search(r'\{[^}]+\}', cleaned, re.DOTALL)
+        if m:
+            try:
+                parsed = json.loads(m.group(0))
+            except Exception:
+                pass
+
+    if not parsed or "issue_type" not in parsed:
+        parsed = {
+            "issue_type": random.choice(ISSUES),
+            "customer_persona": random.choice(PERSONAS),
+            "short_description": (
+                f"A {random.choice(PERSONAS).lower()} customer contacts support about "
+                f"a {random.choice(ISSUES).lower()} issue similar to the previous one."
+            ),
+        }
+
+    if parsed.get("issue_type", "").strip().lower() == orig_issue.strip().lower():
+        parsed["issue_type"] = f"{parsed['issue_type']} (variant)"
 
     parsed.setdefault("customer_persona", random.choice(PERSONAS))
     parsed.setdefault("short_description",
@@ -1943,6 +2135,27 @@ def _do_edit_work(session_id: str, turn_number: int, new_agent_input: str):
         if resolved:
             db.bump(s["scenario"]["id"])
 
+        # An edit can flip a previously-terminal session back to non-terminal,
+        # OR push it newly to terminal. Reset persistence flag if no longer terminal,
+        # and (re-)persist if currently terminal.
+        if s.get("agent_id"):
+            with s["persist_lock"]:
+                if outcome in ("win", "loss"):
+                    if not s["persisted"]:
+                        try:
+                            sqldb.record_session_terminal(
+                                session_id, s["agent_id"], s["scenario"], s["difficulty"],
+                                outcome, s["turn_log"],
+                                s.get("created_via"), s.get("parent_session_id"),
+                            )
+                            s["persisted"] = True
+                        except Exception as _e:
+                            print(f"[DB] edit terminal persist failed: {_e}", flush=True)
+                else:
+                    # Session is no longer terminal — allow re-persist on next terminal.
+                    s["persisted"] = False
+                    s["report_persisted"] = False
+
         mood = s["sim"].mood
         print(f"[EDIT T{turn}] score={score} mood={mood} — sending partial, generating ideals...", flush=True)
 
@@ -1987,24 +2200,35 @@ def _do_edit_work(session_id: str, turn_number: int, new_agent_input: str):
 class MessageRequest(BaseModel):
     session_id:  str
     agent_input: str
+    agent_id:    Optional[str] = None
 
 
 class ScenarioRequest(BaseModel):
     difficulty: int = 1
+    agent_id:   Optional[str] = None
 
 
 class GenerateScenarioRequest(BaseModel):
     difficulty: int = 1
+    agent_id:   Optional[str] = None
 
 
 class EditMessageRequest(BaseModel):
     session_id:  str
     turn_number: int
     new_agent_input: str
+    agent_id:    Optional[str] = None
 
 
 class RedoRequest(BaseModel):
     session_id: str
+    agent_id:   Optional[str] = None
+
+
+class SimilarScenarioRequest(BaseModel):
+    session_id: str
+    difficulty: int = 1
+    agent_id:   Optional[str] = None
 
 
 class CustomScenarioRequest(BaseModel):
@@ -2012,6 +2236,11 @@ class CustomScenarioRequest(BaseModel):
     persona:      str = ""
     description:  str = ""
     difficulty:   int = 1
+    agent_id:     Optional[str] = None
+
+
+class LoginRequest(BaseModel):
+    agent_id: str
 
 
 @app.get("/health")
@@ -2029,7 +2258,20 @@ def ping():
     return {"pong": True}
 
 
-def _create_session(difficulty: int):
+def _new_session_meta(agent_id: Optional[str], created_via: str,
+                      parent_session_id: Optional[str] = None) -> dict:
+    """Common identity / persistence fields added to every session dict."""
+    return {
+        "agent_id":          sqldb.normalize_agent_id(agent_id) if agent_id else None,
+        "created_via":       created_via,
+        "parent_session_id": parent_session_id,
+        "persisted":         False,
+        "report_persisted":  False,
+        "persist_lock":      threading.Lock(),
+    }
+
+
+def _create_session(difficulty: int, agent_id: Optional[str] = None):
     difficulty = max(1, min(5, difficulty))
     scenario   = random.choice(db.load())
     sid        = str(uuid.uuid4())
@@ -2040,6 +2282,7 @@ def _create_session(difficulty: int):
         "report_gen": ReportGen(scenario),
         "scenario":   scenario, "difficulty": difficulty,
         "turn_log":   [], "turn_count": 0,
+        **_new_session_meta(agent_id, created_via="scenario"),
     }
     starting_mood = sessions[sid]["sim"].mood
     return {"session_id": sid, "scenario": scenario, "difficulty": difficulty,
@@ -2048,12 +2291,15 @@ def _create_session(difficulty: int):
 
 @app.post("/scenario")
 def post_scenario(req: ScenarioRequest = None):
-    return _create_session(req.difficulty if req else 1)
+    return _create_session(
+        req.difficulty if req else 1,
+        agent_id=(req.agent_id if req else None),
+    )
 
 
 @app.get("/scenario")
-def get_scenario(difficulty: int = 1):
-    return _create_session(difficulty)
+def get_scenario(difficulty: int = 1, agent_id: Optional[str] = None):
+    return _create_session(difficulty, agent_id=agent_id)
 
 
 @app.websocket("/ws/{session_id}")
@@ -2117,10 +2363,39 @@ def get_report(session_id: str):
     s = sessions[session_id]
     if not s["turn_log"]:
         raise HTTPException(status_code=400, detail="No turns recorded yet")
+
+    report = s["report_gen"].generate(s["turn_log"])
+
+    # Upgrade the persisted row with LLM-derived fields (parameter scores,
+    # report_text, points_json). Idempotent under the lock.
+    if s.get("agent_id"):
+        with s["persist_lock"]:
+            # If terminal stub wasn't written yet (e.g. user called /report before
+            # _win_loss flipped to terminal), insert it first so UPDATE has a target.
+            if not s["persisted"]:
+                outcome, _ = _win_loss(s)
+                if outcome is None:
+                    outcome = "loss"
+                try:
+                    sqldb.record_session_terminal(
+                        session_id, s["agent_id"], s["scenario"], s["difficulty"],
+                        outcome, s["turn_log"],
+                        s.get("created_via"), s.get("parent_session_id"),
+                    )
+                    s["persisted"] = True
+                except Exception as _e:
+                    print(f"[DB] /report stub persist failed: {_e}", flush=True)
+            if not s["report_persisted"]:
+                try:
+                    sqldb.update_session_report(session_id, report)
+                    s["report_persisted"] = True
+                except Exception as _e:
+                    print(f"[DB] /report update failed: {_e}", flush=True)
+
     return {
         "session_id": session_id,
         "scenario":   s["scenario"],
-        "report":     s["report_gen"].generate(s["turn_log"]),
+        "report":     report,
     }
 
 
@@ -2150,6 +2425,55 @@ def generate_scenario(req: GenerateScenarioRequest = None):
         "difficulty": difficulty,
         "turn_log":   [],
         "turn_count": 0,
+        **_new_session_meta(req.agent_id if req else None, created_via="generate"),
+    }
+
+    return {
+        "session_id":        sid,
+        "scenario":          scenario,
+        "difficulty":        difficulty,
+        "short_description": generated["short_description"],
+        "starting_mood":     sessions[sid]["sim"].mood,
+    }
+
+
+# ==============================================================================
+#  FEATURE — SIMILAR SCENARIO (practise variant of the same domain)
+# ==============================================================================
+
+@app.post("/similar-scenario")
+def similar_scenario(req: SimilarScenarioRequest):
+    if req.session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    old_scenario = sessions[req.session_id]["scenario"]
+    difficulty   = max(1, min(5, req.difficulty))
+    # Inherit agent_id from parent session if request didn't provide one
+    inherited_agent_id = req.agent_id or sessions[req.session_id].get("agent_id")
+    generated    = _generate_similar_scenario_via_llm(
+        old_scenario.get("issue_type", ""),
+        old_scenario.get("customer_persona", ""),
+    )
+
+    scenario = {
+        "id":               len(db.data) + len(_generated_scenario_history) + 200,
+        "customer_persona": generated["customer_persona"],
+        "issue_type":       generated["issue_type"],
+        "difficulty":       difficulty,
+    }
+
+    sid = str(uuid.uuid4())
+    sessions[sid] = {
+        "sim":        CustomerSimulator(scenario, difficulty=difficulty),
+        "coach":      AssistantCoach(scenario["issue_type"]),
+        "ideal":      IdealGen(scenario),
+        "report_gen": ReportGen(scenario),
+        "scenario":   scenario,
+        "difficulty": difficulty,
+        "turn_log":   [],
+        "turn_count": 0,
+        **_new_session_meta(inherited_agent_id, created_via="similar",
+                            parent_session_id=req.session_id),
     }
 
     return {
@@ -2187,6 +2511,7 @@ def custom_scenario(req: CustomScenarioRequest):
         "difficulty": difficulty,
         "turn_log":   [],
         "turn_count": 0,
+        **_new_session_meta(req.agent_id, created_via="custom"),
     }
 
     return {
@@ -2239,8 +2564,12 @@ def redo_conversation(req: RedoRequest):
     old = sessions[req.session_id]
     scenario   = old["scenario"]
     difficulty = old["difficulty"]
+    inherited_agent_id = req.agent_id or old.get("agent_id")
 
-    sessions[req.session_id] = {
+    # Mint a NEW session_id so the prior attempt's persisted record is preserved
+    # in the DB and the redo run is a separate row linked via parent_session_id.
+    new_sid = str(uuid.uuid4())
+    sessions[new_sid] = {
         "sim":        CustomerSimulator(scenario, difficulty=difficulty),
         "coach":      AssistantCoach(scenario["issue_type"]),
         "ideal":      IdealGen(scenario),
@@ -2249,22 +2578,114 @@ def redo_conversation(req: RedoRequest):
         "difficulty": difficulty,
         "turn_log":   [],
         "turn_count": 0,
+        **_new_session_meta(inherited_agent_id, created_via="redo",
+                            parent_session_id=req.session_id),
     }
 
-    starting_mood = sessions[req.session_id]["sim"].mood
+    starting_mood = sessions[new_sid]["sim"].mood
 
+    # Notify any WS clients on the OLD sid so the frontend can swap to the new sid
     _ws_send(req.session_id, {
         "type":           "redo",
         "message":        "Conversation restarted with the same scenario.",
         "scenario":       scenario,
         "starting_mood":  starting_mood,
+        "new_session_id": new_sid,
     })
 
     return {
         "status":         "restarted",
-        "session_id":     req.session_id,
+        "session_id":     new_sid,
         "scenario":       scenario,
         "difficulty":     difficulty,
         "starting_mood":  starting_mood,
         "message":        "Conversation reset. Same scenario, fresh start.",
     }
+
+
+# ==============================================================================
+#  AGENT IDENTITY + HISTORY (SQLite-backed)
+# ==============================================================================
+
+@app.post("/login")
+def login(req: LoginRequest):
+    aid = sqldb.normalize_agent_id(req.agent_id)
+    if not aid:
+        raise HTTPException(status_code=400, detail="Agent ID is required.")
+    if len(aid) > 64:
+        raise HTTPException(status_code=400, detail="Agent ID is too long (max 64 chars).")
+    if not re.match(r"^[a-z0-9._\-]+$", aid):
+        raise HTTPException(
+            status_code=400,
+            detail="Agent ID can only contain letters, digits, dot, underscore, dash.",
+        )
+    try:
+        result = sqldb.ensure_agent(aid)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Login failed: {e}")
+
+
+@app.get("/history/{agent_id}")
+def get_history(agent_id: str):
+    aid = sqldb.normalize_agent_id(agent_id)
+    if not aid:
+        raise HTTPException(status_code=400, detail="Agent ID is required.")
+    return {"agent_id": aid, "sessions": sqldb.list_sessions(aid)}
+
+
+@app.get("/history/{agent_id}/{session_id}")
+def get_history_session(agent_id: str, session_id: str):
+    aid = sqldb.normalize_agent_id(agent_id)
+    if not aid:
+        raise HTTPException(status_code=400, detail="Agent ID is required.")
+    row = sqldb.get_session_full(aid, session_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found for this agent.")
+    return row
+
+
+@app.post("/session/{session_id}/finalize")
+def finalize_session(session_id: str):
+    """
+    Best-effort finalize: persist a terminal stub if not yet persisted, and
+    generate + persist the full report if not yet generated. Idempotent.
+    Used by the frontend on tab-close (sendBeacon) and as an explicit commit.
+    """
+    if session_id not in sessions:
+        # Already finalized & evicted, or never existed. Soft-success.
+        return {"status": "noop", "reason": "session not in memory"}
+
+    s = sessions[session_id]
+    if not s.get("agent_id"):
+        return {"status": "noop", "reason": "no agent attached"}
+    if not s["turn_log"]:
+        return {"status": "noop", "reason": "no turns recorded"}
+
+    # If we never reached a natural terminal outcome, force one based on whatever
+    # the current state is (treat as loss if not resolved).
+    outcome, resolved = _win_loss(s)
+    if outcome is None:
+        outcome = "loss"
+
+    with s["persist_lock"]:
+        if not s["persisted"]:
+            sqldb.record_session_terminal(
+                session_id, s["agent_id"], s["scenario"], s["difficulty"],
+                outcome, s["turn_log"],
+                s.get("created_via"), s.get("parent_session_id"),
+            )
+            s["persisted"] = True
+
+    # Generate report once (LLM call) if we haven't already
+    if not s["report_persisted"]:
+        try:
+            report = s["report_gen"].generate(s["turn_log"])
+            with s["persist_lock"]:
+                if not s["report_persisted"]:
+                    sqldb.update_session_report(session_id, report)
+                    s["report_persisted"] = True
+        except Exception as e:
+            print(f"[FINALIZE] report generation failed: {e}", flush=True)
+
+    return {"status": "finalized", "session_id": session_id, "outcome": outcome}

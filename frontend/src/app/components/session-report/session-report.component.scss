@@ -1,0 +1,382 @@
+/* ============================================================
+   FILE PATH: src/app/components/session-report/session-report.component.scss
+   Theme matches chat.component.scss (green/navy professional)
+   ============================================================ */
+
+/* ── Tokens ── */
+$green:       #3DBE6E;
+$green-dark:  #2EA055;
+$green-light: #EBF9F1;
+$navy:        #0B1120;
+$navy-mid:    #1E293B;
+$text:        #1A1A2E;
+$text-muted:  #64748B;
+$border:      #E2E8F0;
+$bg:          #F8FAFB;
+$white:       #FFFFFF;
+$red:         #EF4444;
+$amber:       #F59E0B;
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+.rep-shell {
+  min-height: 100vh;
+  background: $bg;
+  color: $text;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  padding: 0 0 40px;
+}
+
+/* ── Navbar (matches chat) ── */
+.rep-nav {
+  background: $white;
+  border-bottom: 1px solid $border;
+  padding: 0 20px;
+  height: 62px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.rep-back {
+  color: $text-muted;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 6px 12px;
+  border: 1.5px solid $border;
+  border-radius: 8px;
+  transition: all 0.15s;
+
+  &:hover {
+    color: $green-dark;
+    border-color: $green;
+    background: $green-light;
+  }
+}
+
+.rep-title {
+  font-size: 13px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: $navy;
+}
+
+/* ── State blocks ── */
+.state-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 80px 20px;
+  text-align: center;
+  color: $text-muted;
+  font-size: 14px;
+  margin: 24px;
+  background: $white;
+  border: 1px solid $border;
+  border-radius: 16px;
+
+  &.error { color: #991B1B; }
+}
+
+.pulse-core {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: $green;
+  animation: pulse 1.4s infinite ease-in-out;
+  margin-bottom: 12px;
+}
+@keyframes pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%      { transform: scale(1.5); opacity: 0.6; }
+}
+
+/* ── Cards ── */
+.rep-card {
+  background: $white;
+  border: 1px solid $border;
+  border-radius: 12px;
+  padding: 20px;
+  margin: 16px 24px 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+
+  h3 {
+    margin: 0 0 14px;
+    font-size: 15px;
+    color: $navy;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+  }
+}
+
+/* ── Summary header ── */
+.rep-summary-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.rep-tag {
+  background: rgba(245, 158, 11, 0.12);
+  color: #92400E;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+
+  &.high { background: $green-light;            color: $green-dark; }
+  &.low  { background: #FEF2F2;                 color: #991B1B;     }
+  &.mid  { background: rgba(245, 158, 11, 0.12); color: #92400E;     }
+}
+
+.rep-name {
+  font-weight: 700;
+  color: $navy;
+  font-size: 15px;
+}
+
+.rep-meta {
+  margin-left: auto;
+  font-size: 12px;
+  color: $text-muted;
+}
+
+/* Stat pills */
+.rep-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.stat-pill {
+  display: flex;
+  flex-direction: column;
+  background: $bg;
+  border: 1px solid $border;
+  border-radius: 10px;
+  padding: 10px 14px;
+  min-width: 100px;
+}
+
+.stat-num {
+  font-size: 18px;
+  font-weight: 700;
+  color: $navy;
+  line-height: 1;
+
+  &.high { color: $green-dark; }
+  &.mid  { color: $amber;      }
+  &.low  { color: $red;        }
+}
+
+.stat-lbl {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: $text-muted;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  margin-top: 4px;
+}
+
+/* ── Summary points (green accent like chat) ── */
+.rep-points {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rep-points li {
+  position: relative;
+  padding: 10px 14px 10px 30px;
+  background: $green-light;
+  border-left: 3px solid $green;
+  border-radius: 6px;
+  font-size: 13.5px;
+  color: $navy-mid;
+  line-height: 1.55;
+}
+
+.rep-points li::before {
+  content: "▸";
+  position: absolute;
+  left: 12px;
+  top: 10px;
+  color: $green-dark;
+  font-weight: 700;
+}
+
+/* ── Param bars ── */
+.rep-params {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rep-param-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.rep-param-lbl {
+  flex: 0 0 220px;
+  font-size: 13px;
+  font-weight: 600;
+  color: $navy;
+}
+
+.rep-param-track {
+  flex: 1;
+  height: 10px;
+  background: $border;
+  border-radius: 10px;
+  overflow: hidden;
+  min-width: 120px;
+}
+
+.rep-param-fill {
+  height: 100%;
+  border-radius: 10px;
+  transition: width 0.6s ease;
+
+  &.high { background: $green; }
+  &.mid  { background: $amber; }
+  &.low  { background: $red;   }
+}
+
+.rep-param-num {
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 48px;
+  text-align: right;
+
+  &.high { color: $green-dark; }
+  &.mid  { color: $amber;      }
+  &.low  { color: $red;        }
+}
+
+/* ── Best/Worst highlights ── */
+.rep-highlights {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.rep-hi-card {
+  border-radius: 10px;
+  padding: 14px;
+  border: 1px solid $border;
+
+  &.best  { background: $green-light; border-color: rgba(61, 190, 110, 0.35); }
+  &.worst { background: #FEF2F2;       border-color: #FECACA;                  }
+}
+
+.hi-label {
+  font-weight: 700;
+  font-size: 13px;
+  margin-bottom: 6px;
+  color: $navy;
+}
+
+.rep-hi-card blockquote {
+  margin: 0;
+  font-style: italic;
+  color: $navy-mid;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* ── Transcript ── */
+.rep-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.t-turn {
+  border: 1px solid $border;
+  border-radius: 10px;
+  padding: 14px;
+  background: $bg;
+}
+
+.t-turn-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.t-turn-num {
+  font-size: 11px;
+  font-weight: 700;
+  color: $text-muted;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.t-turn-score {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 999px;
+
+  &.high { background: $green-light;            color: $green-dark; }
+  &.mid  { background: rgba(245, 158, 11, 0.15); color: #92400E;     }
+  &.low  { background: #FEF2F2;                  color: #991B1B;     }
+}
+
+.t-msg {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 6px 0;
+}
+
+.t-role {
+  flex: 0 0 100px;
+  font-size: 12px;
+  font-weight: 700;
+  color: $text-muted;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.t-text {
+  flex: 1;
+  font-size: 13.5px;
+  color: $navy;
+  line-height: 1.55;
+}
+
+.t-tip {
+  margin-top: 10px;
+  font-size: 12px;
+  color: $green-dark;
+  background: $green-light;
+  border-left: 3px solid $green;
+  padding: 8px 12px;
+  border-radius: 6px;
+  line-height: 1.5;
+}
+
+.rep-empty {
+  font-size: 13px;
+  color: $text-muted;
+}

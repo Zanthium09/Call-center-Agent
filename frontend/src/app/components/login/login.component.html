@@ -1,0 +1,42 @@
+<div class="login-shell">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="brand-dot"></div>
+      <span class="brand-name">Tetranetics</span>
+    </div>
+    <h1 class="login-title">Agent Sign In</h1>
+    <p class="login-sub">Enter your Agent ID to start a session or review your past performance.</p>
+
+    <div class="login-warning">
+      <strong>Honor system:</strong> anyone who knows your Agent ID can view your history.
+      Don't put personal information in the ID.
+    </div>
+
+    <label class="login-label" for="agentId">Agent ID</label>
+    <input
+      id="agentId"
+      class="login-input"
+      type="text"
+      [(ngModel)]="agentIdInput"
+      (keydown.enter)="continueToChat()"
+      [disabled]="loading"
+      placeholder="e.g. agent-007"
+      maxlength="64"
+      autofocus />
+
+    <p class="login-hint">Letters, digits, dot, underscore, dash. Auto-created on first use.</p>
+
+    <div class="login-error" *ngIf="error">{{ error }}</div>
+    <div class="login-greeting" *ngIf="greeting && !error">{{ greeting }}</div>
+
+    <div class="login-actions">
+      <button class="btn-login-primary" (click)="continueToChat()" [disabled]="loading">
+        <span *ngIf="!loading">▶ Start Session</span>
+        <span *ngIf="loading">Signing in...</span>
+      </button>
+      <button class="btn-login-secondary" (click)="reviewPrevious()" [disabled]="loading">
+        📊 Review Previous Performance
+      </button>
+    </div>
+  </div>
+</div>

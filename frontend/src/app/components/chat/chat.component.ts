@@ -1,11 +1,13 @@
 // FILE PATH: src/app/components/chat/chat.component.ts
 import {
   Component, OnInit, AfterViewChecked, OnDestroy,
-  ElementRef, ViewChild, ChangeDetectorRef, NgZone
+  ElementRef, ViewChild, ChangeDetectorRef, NgZone, HostListener
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { Router } from '@angular/router';
 import { CoachService, WsMessage } from '../../services/coach.service';
+import { AuthService } from '../../services/auth.service';
 
 interface Ideals { positive: string; neutral: string; negative: string; ideal: string; }
 interface Message {
@@ -48,11 +50,43 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
   constructor(
     private coach: CoachService,
     private cdr: ChangeDetectorRef,
-    private zone: NgZone
+    private zone: NgZone,
+    private auth: AuthService,
+    private router: Router,
   ) { }
 
-  ngOnInit() { this.addLog('🟢 App started'); this.startNewSession(); }
-  ngOnDestroy() { this.coach.closeSocket(); }
+  get agentId(): string | null { return this.auth.currentAgentId; }
+
+  ngOnInit() {
+    if (!this.auth.isAuthed()) {
+      this.router.navigate(['/login']);
+      return;
+    }
+    this.addLog(`🟢 App started — agent ${this.agentId}`);
+    this.startNewSession();
+  }
+  ngOnDestroy() {
+    // Best-effort persist if session has progress and isn't already finalized
+    this._finalizeIfNeeded();
+    this.coach.closeSocket();
+  }
+
+  @HostListener('window:beforeunload')
+  _onUnload() { this._finalizeIfNeeded(); }
+
+  private _finalizeIfNeeded() {
+    if (this.sessionId && this.messages.length > 0 && !this.report) {
+      this.coach.finalizeSession(this.sessionId);
+    }
+  }
+
+  goHistory() { this.router.navigate(['/history']); }
+  logout() {
+    this._finalizeIfNeeded();
+    this.coach.closeSocket();
+    this.auth.logout();
+    this.router.navigate(['/login']);
+  }
   ngAfterViewChecked() {
     if (this.scrollContainer)
       this.scrollContainer.nativeElement.scrollTop = this.scrollContainer.nativeElement.scrollHeight;
@@ -111,7 +145,7 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
     this.coach.checkHealth().subscribe({
       next: (h) => {
         this.addLog(`✅ Backend OK — LM Studio: ${h?.lm_studio ?? 'unknown'}`);
-        this.coach.startSession(this.selectedDifficulty).subscribe({
+        this.coach.startSession(this.selectedDifficulty, this.agentId).subscribe({
           next: (res) => {
             this.sessionId = res.session_id; this.scenario = res.scenario;
             this._setStartingMood(res.starting_mood); this.turnsRemaining = 20;
@@ -225,8 +259,12 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
         this.currentMoodLabel = msg.mood_label ?? this.currentMoodLabel;
         this.turnsRemaining = msg.turns_remaining ?? this.turnsRemaining;
 
-        if (msg.resolved || msg.outcome === 'win') {
-          this.resolved = true;
+        const editIsWin = !!(msg.resolved || msg.outcome === 'win');
+        const editIsLoss = msg.outcome === 'loss';
+        this.resolved = editIsWin;
+        this.failed = editIsLoss;
+
+        if (editIsWin) {
           this.addLog('🏆 Issue resolved (after edit)!');
           this.reportLoading = true;
           this.cdr.detectChanges();
@@ -236,9 +274,7 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
             }),
             error: () => this.zone.run(() => { this.reportLoading = false; this.cdr.detectChanges(); })
           });
-        }
-        if (msg.outcome === 'loss') {
-          this.failed = true;
+        } else if (editIsLoss) {
           this.addLog('💀 Session failed (after edit).');
           this.reportLoading = true;
           this.cdr.detectChanges();
@@ -248,6 +284,9 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
             }),
             error: () => this.zone.run(() => { this.reportLoading = false; this.cdr.detectChanges(); })
           });
+        } else {
+          this.report = null;
+          this.reportLoading = false;
         }
         this.cdr.detectChanges();
         break;
@@ -292,7 +331,7 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
     this.messages.push({ role: 'agent', text: input });
     this.cdr.detectChanges();
 
-    this.coach.sendMessage(this.sessionId, input).subscribe({
+    this.coach.sendMessage(this.sessionId, input, this.agentId).subscribe({
       next: () => { this.processingLabel = 'Analysing your reply...'; this.cdr.detectChanges(); },
       error: (err) => {
         this.addLog(`❌ /message failed — ${err.status}`);
@@ -329,7 +368,7 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
     this.addLog('🎲 Generating new scenario via LLM...');
     this.cdr.detectChanges();
 
-    this.coach.generateScenario(this.selectedDifficulty).subscribe({
+    this.coach.generateScenario(this.selectedDifficulty, this.agentId).subscribe({
       next: (res) => {
         this.zone.run(() => {
           this.sessionId = res.session_id;
@@ -378,7 +417,8 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
       this.customIssue.trim(),
       this.customPersona.trim(),
       this.customDescription.trim(),
-      this.selectedDifficulty
+      this.selectedDifficulty,
+      this.agentId,
     ).subscribe({
       next: (res) => {
         this.zone.run(() => {
@@ -413,7 +453,7 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
   //  Feature 2: Edit a previously sent agent reply
   // ════════════════════════════════════════════════════════════════════════════
   startEdit(index: number) {
-    if (this.loading || this.resolved || this.failed) return;
+    if (this.loading) return;
     this.messages.forEach(m => { m.editing = false; m.editText = undefined; });
     this.messages[index].editing = true;
     this.messages[index].editText = this.messages[index].text;
@@ -442,10 +482,16 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
     this.messages[index].text = newText;
     this.messages[index].editing = false;
     this.messages[index].editText = undefined;
+    // Resuming the conversation from this turn — clear any ended-session state.
+    this.resolved = false;
+    this.failed = false;
+    this.report = null;
+    this.reportLoading = false;
+    this.showReport = false;
     this.addLog(`✏️ Editing turn ${turnNumber}...`);
     this.cdr.detectChanges();
 
-    this.coach.editMessage(this.sessionId, turnNumber, newText).subscribe({
+    this.coach.editMessage(this.sessionId, turnNumber, newText, this.agentId).subscribe({
       next: () => {
         this.processingLabel = 'Regenerating response...';
         this.cdr.detectChanges();
@@ -471,9 +517,15 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
     this.addLog('🔄 Restarting conversation (same scenario)...');
     this.cdr.detectChanges();
 
-    this.coach.redoConversation(this.sessionId).subscribe({
+    this.coach.redoConversation(this.sessionId, this.agentId).subscribe({
       next: (res) => {
         this.zone.run(() => {
+          // Backend now mints a NEW session_id on redo so prior attempt
+          // stays persisted in DB. Swap WS connection to the new sid.
+          if (res.session_id && res.session_id !== this.sessionId) {
+            this.coach.closeSocket();
+            this.sessionId = res.session_id;
+          }
           this.messages = [];
           this.resolved = false;
           this.failed = false;
@@ -488,6 +540,7 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
           this.generatedDescription = '';
           this.addLog('✅ Conversation restarted — same scenario, fresh start');
           this.cdr.detectChanges();
+          this._connectWebSocket(this.sessionId);
         });
       },
       error: (err) => {
@@ -509,5 +562,67 @@ export class ChatComponent implements OnInit, AfterViewChecked, OnDestroy {
     this.showReport = false;
     this.addLog('💬 Returned to chat view');
     this.cdr.detectChanges();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  NEW — Performance breakdown: 5-dimension parameter rows for the report
+  // ════════════════════════════════════════════════════════════════════════════
+  paramRows(): { label: string; value: number }[] {
+    const p = (this.report && this.report.parameters) || {};
+    return [
+      { label: '👔 Professionalism',         value: p.professionalism ?? 0 },
+      { label: '😊 Customer Satisfaction',   value: p.customer_satisfaction ?? 0 },
+      { label: '🛠️ Problem Resolution',      value: p.problem_resolution ?? 0 },
+      { label: '❤️ Empathy',                 value: p.empathy ?? 0 },
+      { label: '💬 Communication Clarity',   value: p.communication_clarity ?? 0 },
+    ];
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  NEW — Generate a SIMILAR scenario (same domain, different specifics)
+  // ════════════════════════════════════════════════════════════════════════════
+  generateSimilarScenario() {
+    if (this.loading || this.generatingScenario || !this.sessionId) return;
+    this.coach.closeSocket();
+    this.generatingScenario = true;
+    this.loading = true;
+    this.error = '';
+    this.processingLabel = 'Generating similar scenario...';
+    this.addLog('🎯 Generating a similar scenario via LLM...');
+    this.cdr.detectChanges();
+
+    this.coach.similarScenario(this.sessionId, this.selectedDifficulty, this.agentId).subscribe({
+      next: (res) => {
+        this.zone.run(() => {
+          this.sessionId = res.session_id;
+          this.scenario = res.scenario;
+          this.generatedDescription = res.short_description || '';
+          this._setStartingMood(res.starting_mood);
+          this.turnsRemaining = 20;
+          this.messages = [];
+          this.resolved = false;
+          this.failed = false;
+          this.report = null;
+          this.reportLoading = false;
+          this.showReport = false;
+          this.generatingScenario = false;
+          this.loading = false;
+          this.processingLabel = '';
+          this.addLog(`🎯 Similar: ${res.scenario?.customer_persona} | ${res.scenario?.issue_type}`);
+          this.cdr.detectChanges();
+          this._connectWebSocket(res.session_id);
+        });
+      },
+      error: (err) => {
+        this.zone.run(() => {
+          this.generatingScenario = false;
+          this.loading = false;
+          this.processingLabel = '';
+          this.addLog(`❌ Similar scenario failed — ${err.status}`);
+          this.error = 'Failed to generate similar scenario. Is LM Studio running?';
+          this.cdr.detectChanges();
+        });
+      }
+    });
   }
 }

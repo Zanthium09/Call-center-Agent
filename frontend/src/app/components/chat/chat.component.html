@@ -34,6 +34,10 @@
       </button>
 
       <button class="btn-new" (click)="newSession()" [disabled]="loading && !showReport">New Session</button>
+
+      <span class="nav-agent-pill" *ngIf="agentId" title="Logged-in agent">👤 {{ agentId }}</span>
+      <button class="btn-nav-link" (click)="goHistory()" title="View your past sessions">📊 History</button>
+      <button class="btn-nav-link" (click)="logout()" title="Logout">⎋ Logout</button>
     </div>
   </nav>
 
@@ -182,8 +186,8 @@
                 <ng-container *ngIf="!m.editing">
                   <div class="msg-bubble agent-bubble">{{ m.text }}</div>
                   <!-- Edit button — only show if session is active and not loading -->
-                  <button class="btn-edit-msg" *ngIf="!resolved && !failed && !loading" (click)="startEdit(i)"
-                    title="Edit this reply and regenerate the customer response">
+                  <button class="btn-edit-msg" *ngIf="!loading" (click)="startEdit(i)"
+                    title="Edit this reply and resume the conversation from this turn">
                     ✏️ Edit
                   </button>
                 </ng-container>
@@ -487,8 +491,41 @@
                 </div>
               </div>
             </div>
-            <div class="report-summary-text" *ngIf="report.report_text">
+            <div class="report-summary-text" *ngIf="report.report_points?.length">
+              <ul class="summary-points">
+                <li *ngFor="let pt of report.report_points">{{ pt }}</li>
+              </ul>
+            </div>
+            <div class="report-summary-text"
+                 *ngIf="!report.report_points?.length && report.report_text">
               <p>{{ report.report_text }}</p>
+            </div>
+          </div>
+
+          <!-- SECTION 1b: Performance Breakdown -->
+          <div class="report-section" *ngIf="report.parameters">
+            <div class="report-section-header">
+              <span class="report-section-title">📊 Performance Breakdown</span>
+              <span class="report-section-sub">Score across key dimensions</span>
+            </div>
+            <div class="param-list">
+              <div class="param-row" *ngFor="let p of paramRows()">
+                <span class="param-label">{{ p.label }}</span>
+                <div class="param-track">
+                  <div class="param-fill"
+                       [style.width.%]="p.value * 10"
+                       [class.high]="p.value >= 7"
+                       [class.mid]="p.value >= 4 && p.value < 7"
+                       [class.low]="p.value < 4">
+                  </div>
+                </div>
+                <span class="param-num"
+                      [class.high]="p.value >= 7"
+                      [class.mid]="p.value >= 4 && p.value < 7"
+                      [class.low]="p.value < 4">
+                  {{ p.value }}/10
+                </span>
+              </div>
             </div>
           </div>
 
@@ -569,6 +606,15 @@
           <div class="report-actions">
             <button class="btn-back-to-chat" (click)="backToChat()">💬 Back to Chat</button>
             <button class="btn-redo" (click)="redoConversation()" [disabled]="loading">🔄 Redo Same Scenario</button>
+            <button class="btn-similar-scenario" (click)="generateSimilarScenario()"
+                    [disabled]="loading || generatingScenario"
+                    title="Practice a similar scenario in the same domain but with different specifics">
+              <span *ngIf="!generatingScenario">🎯 Practice Similar Scenario</span>
+              <span *ngIf="generatingScenario" class="gen-loading">
+                <span class="btn-spinner btn-spinner-dark"></span>
+                Generating...
+              </span>
+            </button>
             <button class="btn-action-primary" (click)="newSession()">
               🔄 Start New Session
             </button>

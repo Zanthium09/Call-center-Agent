@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile main.py)",
+      "Bash(npx --no-install tsc --noEmit -p tsconfig.app.json)",
+      "Bash(python -m py_compile main.py db.py)",
+      "Bash(python -c ' *)",
+      "Bash(npm install *)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(npx --no-install ng build --configuration development)",
+      "Bash(rm -f tetranetics_smoke.db)",
+      "Bash(python -c \"import main\")",
+      "Bash(curl -s -X POST http://localhost:8000/login -H \"Content-Type: application/json\" -d \"{\\\\\"agent_id\\\\\": \\\\\"test\\\\\"}\")",
+      "Bash(curl -s http://localhost:8000/health)",
+      "Bash(curl -s http://localhost:8000/)",
+      "Bash(npx tsc *)",
+      "Bash(npm list *)",
+      "Bash(grep -nE \"\\(#[0-9A-Fa-f]{3,8}|background|color|border-radius|font-family|--\\)\" \"C:\\\\Users\\\\Rushabh\\\\OneDrive\\\\Desktop\\\\Call-centre-agent\\\\frontend\\\\src\\\\app\\\\components\\\\chat\\\\chat.component.scss\")",
+      "Bash(npx ng *)"
+    ]
+  }
+}

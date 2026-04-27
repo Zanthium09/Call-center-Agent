@@ -1,0 +1,136 @@
+<div class="history-shell">
+  <!-- Top bar -->
+  <nav class="history-nav">
+    <div class="nav-brand">
+      <div class="brand-dot"></div>
+      <span class="brand-name">Tetranetics</span>
+      <span class="brand-divider">|</span>
+      <span class="brand-sub">Performance History</span>
+    </div>
+    <div class="nav-right">
+      <span class="agent-pill">Agent: <strong>{{ agentId }}</strong></span>
+      <button class="btn-nav" (click)="goChat()">▶ Start Session</button>
+      <button class="btn-nav-ghost" (click)="goLogin()">Logout</button>
+    </div>
+  </nav>
+
+  <!-- Loading -->
+  <div class="state-block" *ngIf="loading">
+    <div class="pulse-core"></div>
+    <p>Loading your history…</p>
+  </div>
+
+  <!-- Error -->
+  <div class="state-block error" *ngIf="error && !loading">
+    <p>{{ error }}</p>
+  </div>
+
+  <!-- Empty -->
+  <div class="state-block empty" *ngIf="!loading && !error && sessions.length === 0">
+    <div class="empty-icon">📭</div>
+    <h2>No sessions yet</h2>
+    <p>Run a session and your stats will appear here. Click <em>Start Session</em> above.</p>
+  </div>
+
+  <!-- Content -->
+  <ng-container *ngIf="!loading && !error && sessions.length > 0">
+    <!-- Summary tiles -->
+    <div class="tile-row">
+      <div class="tile">
+        <span class="tile-num">{{ totalSessions }}</span>
+        <span class="tile-lbl">Total Sessions</span>
+      </div>
+      <div class="tile">
+        <span class="tile-num" style="color:#3DBE6E;">{{ totalWins }}</span>
+        <span class="tile-lbl">Resolved</span>
+      </div>
+      <div class="tile">
+        <span class="tile-num" style="color:#EF4444;">{{ totalLosses }}</span>
+        <span class="tile-lbl">Failed</span>
+      </div>
+      <div class="tile">
+        <span class="tile-num">{{ overallAvg }}</span>
+        <span class="tile-lbl">Lifetime Avg</span>
+      </div>
+      <div class="tile">
+        <span class="tile-num">{{ bestEverScore }}</span>
+        <span class="tile-lbl">Best Session</span>
+      </div>
+    </div>
+
+    <!-- Chart grid -->
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3>📈 Improvement Graph — Average Score</h3>
+        <p class="chart-sub">How your average score changes session over session.</p>
+        <div class="chart-wrap">
+          <canvas baseChart [type]="'line'" [data]="avgChartData" [options]="avgChartOptions"></canvas>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <h3>🎯 Per-Parameter Trend</h3>
+        <p class="chart-sub">All five performance dimensions over time.</p>
+        <div class="chart-wrap">
+          <canvas baseChart [type]="'line'" [data]="paramChartData" [options]="paramChartOptions"></canvas>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <h3>🏅 Best vs Worst Turn</h3>
+        <p class="chart-sub">High-water and low-water marks per session.</p>
+        <div class="chart-wrap">
+          <canvas baseChart [type]="'line'" [data]="bestWorstData" [options]="bestWorstOptions"></canvas>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <h3>🏆 Outcome Mix</h3>
+        <p class="chart-sub">Resolved vs failed across all sessions.</p>
+        <div class="chart-wrap chart-doughnut">
+          <canvas baseChart [type]="'doughnut'" [data]="outcomeData" [options]="outcomeOptions"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Session table -->
+    <div class="session-list-card">
+      <h3>📋 Session Log</h3>
+      <p class="chart-sub">Click any row to view the full report.</p>
+      <table class="session-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Persona</th>
+            <th>Issue</th>
+            <th>Diff</th>
+            <th>Outcome</th>
+            <th>Avg</th>
+            <th>Turns</th>
+            <th>Date</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let s of sessions; let i = index">
+            <td>{{ sessions.length - i }}</td>
+            <td>{{ s.scenario_persona || '—' }}</td>
+            <td>{{ s.scenario_issue || '—' }}</td>
+            <td>{{ s.difficulty ?? '—' }}</td>
+            <td>{{ outcomeLabel(s.outcome) }}</td>
+            <td>
+              <span class="avg-pill" [style.color]="scoreColor(s.average_score)">
+                {{ s.average_score ?? '—' }}
+              </span>
+            </td>
+            <td>{{ s.total_turns ?? '—' }}</td>
+            <td>{{ s.ended_at ? (s.ended_at | date:'MMM d, HH:mm') : '—' }}</td>
+            <td>
+              <a class="btn-view-row" [routerLink]="['/history', s.session_id]">View ↗</a>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </ng-container>
+</div>

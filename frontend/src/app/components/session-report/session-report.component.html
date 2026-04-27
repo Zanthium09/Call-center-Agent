@@ -1,0 +1,126 @@
+<div class="rep-shell">
+  <nav class="rep-nav">
+    <a class="rep-back" routerLink="/history">← Back to History</a>
+    <span class="rep-title">Past Session Report</span>
+  </nav>
+
+  <div class="state-block" *ngIf="loading">
+    <div class="pulse-core"></div>
+    <p>Loading session…</p>
+  </div>
+
+  <div class="state-block error" *ngIf="error && !loading">
+    <p>{{ error }}</p>
+  </div>
+
+  <ng-container *ngIf="data && !loading">
+    <!-- Summary -->
+    <div class="rep-card rep-summary">
+      <div class="rep-summary-head">
+        <span class="rep-tag" [class.high]="data.outcome === 'win'" [class.low]="data.outcome === 'loss'">
+          {{ outcomeBadge(data.outcome).label }}
+        </span>
+        <span class="rep-name">{{ data.scenario_persona }} · {{ data.scenario_issue }}</span>
+        <span class="rep-meta" *ngIf="data.ended_at">
+          {{ data.ended_at | date:'MMM d, y, HH:mm' }}
+        </span>
+      </div>
+      <div class="rep-stats">
+        <div class="stat-pill">
+          <span class="stat-num" [class.high]="(data.average_score ?? 0) >= 7"
+                [class.mid]="(data.average_score ?? 0) >= 4 && (data.average_score ?? 0) < 7"
+                [class.low]="(data.average_score ?? 0) < 4">
+            {{ data.average_score ?? '—' }}/10
+          </span>
+          <span class="stat-lbl">Avg Score</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-num">{{ data.total_turns ?? '—' }}</span>
+          <span class="stat-lbl">Turns</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-num">{{ data.difficulty ?? '—' }}/5</span>
+          <span class="stat-lbl">Difficulty</span>
+        </div>
+        <div class="stat-pill" *ngIf="data.trend">
+          <span class="stat-num">{{ data.trend | titlecase }}</span>
+          <span class="stat-lbl">Trend</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Summary points -->
+    <div class="rep-card" *ngIf="data.points && data.points.length">
+      <h3>📝 Performance Summary</h3>
+      <ul class="rep-points">
+        <li *ngFor="let p of data.points">{{ p }}</li>
+      </ul>
+    </div>
+
+    <!-- 5 dimensions -->
+    <div class="rep-card">
+      <h3>📊 Performance Breakdown</h3>
+      <div class="rep-params">
+        <div class="rep-param-row" *ngFor="let p of paramRows()">
+          <span class="rep-param-lbl">{{ p.label }}</span>
+          <div class="rep-param-track">
+            <div class="rep-param-fill"
+                 [style.width.%]="p.value * 10"
+                 [class.high]="p.value >= 7"
+                 [class.mid]="p.value >= 4 && p.value < 7"
+                 [class.low]="p.value < 4"></div>
+          </div>
+          <span class="rep-param-num"
+                [class.high]="p.value >= 7"
+                [class.mid]="p.value >= 4 && p.value < 7"
+                [class.low]="p.value < 4">{{ p.value }}/10</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Best / worst -->
+    <div class="rep-card" *ngIf="data.best_turn_score !== null && data.worst_turn_score !== null">
+      <h3>🏅 Highlights</h3>
+      <div class="rep-highlights">
+        <div class="rep-hi-card best">
+          <div class="hi-label">🏆 Best Turn — {{ data.best_turn_score }}/10</div>
+          <blockquote *ngIf="data.best_turn_agent">"{{ data.best_turn_agent }}"</blockquote>
+        </div>
+        <div class="rep-hi-card worst">
+          <div class="hi-label">⚠️ Needs Work — {{ data.worst_turn_score }}/10</div>
+          <blockquote *ngIf="data.worst_turn_agent">"{{ data.worst_turn_agent }}"</blockquote>
+        </div>
+      </div>
+    </div>
+
+    <!-- Transcript -->
+    <div class="rep-card" *ngIf="data.turn_log && data.turn_log.length">
+      <h3>💬 Full Transcript</h3>
+      <div class="rep-transcript">
+        <div class="t-turn" *ngFor="let t of data.turn_log">
+          <div class="t-turn-head">
+            <span class="t-turn-num">Turn {{ t.turn }}</span>
+            <span class="t-turn-score" [class]="scoreClass(t.score)">
+              {{ t.score }}/10
+            </span>
+          </div>
+          <div class="t-msg t-agent">
+            <span class="t-role">🧑‍💼 You</span>
+            <span class="t-text">{{ t.agent }}</span>
+          </div>
+          <div class="t-msg t-customer">
+            <span class="t-role">🧑‍💻 Customer</span>
+            <span class="t-text">{{ t.customer }}</span>
+          </div>
+          <div class="t-tip" *ngIf="t.tip">💡 {{ t.tip }}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Empty fallback -->
+    <div class="rep-card" *ngIf="!data.turn_log || !data.turn_log.length">
+      <h3>💬 Transcript</h3>
+      <p class="rep-empty">No turn-by-turn record stored for this session.</p>
+    </div>
+  </ng-container>
+</div>
