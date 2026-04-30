@@ -490,6 +490,53 @@ _SIMILAR_SCENARIO_GEN_USER_TEMPLATE = (
     '}}'
 )
 
+# Adaptive targeted variant — consumed when prior session reveals weak parameters.
+# Each weak parameter maps to a SCENARIO TRAIT that puts pressure on it.
+_PARAM_TO_TRAIT = {
+    "empathy":
+        "the customer should be highly EMOTIONAL — distressed, panicked, "
+        "tearful, or grieving — so the agent is forced to lead with empathy "
+        "before any problem-solving",
+    "problem_resolution":
+        "the issue should be MULTI-LAYERED with several moving parts that "
+        "demand a concrete step-by-step fix and a specific timeline; vague "
+        "reassurances must not be enough to satisfy this customer",
+    "professionalism":
+        "the customer should be RUDE, hostile, sarcastic, or insulting — "
+        "personally attacking the agent — to test whether the agent can stay "
+        "calm, courteous, and professional under fire",
+    "communication_clarity":
+        "the customer should be CONFUSED or non-technical (elderly, not "
+        "fluent in jargon, easily lost) so the agent must explain things in "
+        "very simple, structured, unambiguous language",
+    "customer_satisfaction":
+        "the customer should be SKEPTICAL and hard to please — has been "
+        "burned before, distrusts promises, wants proof, and will not accept "
+        "generic acknowledgements; the agent must work to truly win them over",
+}
+
+_SIMILAR_SCENARIO_TARGETED_TEMPLATE = (
+    "Generate a NEW call centre scenario tailored to TRAIN a specific weakness "
+    "in the agent. The previous session showed the agent struggled with: "
+    "{weak_list}.\n\n"
+    "Original issue: {orig_issue}\n"
+    "Original persona: {orig_persona}\n\n"
+    "Rules:\n"
+    "- Same general DOMAIN as the original (billing / shipping / technical / account / warranty / etc.)\n"
+    "- DIFFERENT specific issue from the original\n"
+    "- The customer + situation must put HEAVY pressure on the weak area(s):\n"
+    "{trait_block}\n"
+    "- Comparable difficulty to the original\n"
+    "- short_description MUST briefly mention which skill this scenario will train\n\n"
+    "Return ONLY this JSON:\n"
+    '{{\n'
+    '  "issue_type": "<specific problem, 3-6 words>",\n'
+    '  "customer_persona": "<personality, 2-5 words>",\n'
+    '  "short_description": "<1-2 sentence summary; end with: \\"Designed to '
+    'train your <weak skill>.\\">"\n'
+    '}}'
+)
+
 
 # ── Emotional states ─────────────────────────────────────────────────────────
 
@@ -2005,11 +2052,110 @@ def _generate_scenario_via_llm() -> dict:
     return parsed
 
 
-def _generate_similar_scenario_via_llm(orig_issue: str, orig_persona: str) -> dict:
+def _pick_weak_params(session: dict, max_picks: int = 2) -> list:
+    """Identify the weakest 1-2 parameter areas from a completed session so the
+    next similar scenario can stress-test exactly those skills.
+
+    Tier A (preferred): use the LLM-scored 5 parameters from the cached report.
+                        Pick those with score <= 6, sorted ascending.
+    Tier B (fallback):  if no report yet, scan turn_log for missing
+                        empathy / action / timeline / specifics signals and
+                        translate the most common gaps into parameter names.
+    Returns up to `max_picks` parameter keys ordered weakest-first. Returns []
+    if the agent's performance was strong across the board (nothing to target).
+    """
+    PARAM_KEYS = [
+        "empathy", "problem_resolution", "professionalism",
+        "communication_clarity", "customer_satisfaction",
+    ]
+
+    # ── Tier A: use cached parameters from the LLM report ──
+    report = session.get("cached_report") or {}
+    params = report.get("parameters") or {}
+    if params:
+        scored = [(k, params.get(k, 10)) for k in PARAM_KEYS]
+        weak = sorted(
+            (kv for kv in scored if kv[1] <= 6),
+            key=lambda kv: kv[1],
+        )
+        if weak:
+            return [k for k, _ in weak[:max_picks]]
+        # All params strong → still target the lowest one for variety
+        scored.sort(key=lambda kv: kv[1])
+        return [scored[0][0]]
+
+    # ── Tier B: heuristic over turn_log ──
+    turn_log = session.get("turn_log") or []
+    if not turn_log:
+        return []
+
+    miss_empathy = miss_action = miss_timeline = miss_specifics = 0
+    repetitive = 0
+    seen_replies = []
+
+    EMP_WORDS = ("sorry", "apologise", "apologize", "understand", "frustrat",
+                 "appreciate", "i hear you", "i can imagine", "thank you")
+    ACT_WORDS = ("i will", "i'll", "let me", "we will", "we'll", "i'm going",
+                 "i am going", "going to", "we are going")
+    TIME_WORDS = ("minute", "hour", "today", "tomorrow", "by ", "within",
+                  "right now", "immediately", "in 24", "in 48", "business day")
+
+    for t in turn_log:
+        agent_text = (t.get("agent") or "").lower()
+        if not any(w in agent_text for w in EMP_WORDS):
+            miss_empathy += 1
+        if not any(w in agent_text for w in ACT_WORDS):
+            miss_action += 1
+        if not any(w in agent_text for w in TIME_WORDS):
+            miss_timeline += 1
+        if len(agent_text.split()) < 8:
+            miss_specifics += 1
+        # Detect near-duplicate consecutive replies
+        for prev in seen_replies[-2:]:
+            if agent_text and agent_text == prev:
+                repetitive += 1
+                break
+        seen_replies.append(agent_text)
+
+    avg_score = (sum(t.get("score", 0) for t in turn_log) / len(turn_log))
+
+    # Map heuristic gaps → parameter names (with a weight for severity)
+    candidates = [
+        ("empathy",                miss_empathy),
+        ("problem_resolution",     miss_action + miss_timeline),
+        ("communication_clarity",  miss_specifics),
+        ("professionalism",        repetitive),
+        ("customer_satisfaction",  len(turn_log) if avg_score < 5 else 0),
+    ]
+    candidates.sort(key=lambda kv: kv[1], reverse=True)
+    picked = [k for k, score in candidates if score > 0][:max_picks]
+    return picked or [candidates[0][0]]
+
+
+def _generate_similar_scenario_via_llm(
+    orig_issue: str,
+    orig_persona: str,
+    weak_params: list = None,
+) -> dict:
+    if weak_params:
+        weak_list = ", ".join(w.replace("_", " ") for w in weak_params)
+        trait_block = "\n".join(
+            f"  • {_PARAM_TO_TRAIT[w]}" for w in weak_params if w in _PARAM_TO_TRAIT
+        )
+        user_prompt = _SIMILAR_SCENARIO_TARGETED_TEMPLATE.format(
+            orig_issue=orig_issue,
+            orig_persona=orig_persona,
+            weak_list=weak_list,
+            trait_block=trait_block,
+        )
+    else:
+        user_prompt = _SIMILAR_SCENARIO_GEN_USER_TEMPLATE.format(
+            orig_issue=orig_issue, orig_persona=orig_persona,
+        )
+
     raw = _call_json(
         [{"role": "system", "content": _SCENARIO_GEN_SYSTEM},
-         {"role": "user", "content": _SIMILAR_SCENARIO_GEN_USER_TEMPLATE.format(
-             orig_issue=orig_issue, orig_persona=orig_persona)}],
+         {"role": "user", "content": user_prompt}],
         max_tokens=180,
     )
     cleaned = _strip(raw)
@@ -2365,6 +2511,7 @@ def get_report(session_id: str):
         raise HTTPException(status_code=400, detail="No turns recorded yet")
 
     report = s["report_gen"].generate(s["turn_log"])
+    s["cached_report"] = report   # used by Practice-Similar weakness detection
 
     # Upgrade the persisted row with LLM-derived fields (parameter scores,
     # report_text, points_json). Idempotent under the lock.
@@ -2446,13 +2593,21 @@ def similar_scenario(req: SimilarScenarioRequest):
     if req.session_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    old_scenario = sessions[req.session_id]["scenario"]
+    parent_session = sessions[req.session_id]
+    old_scenario = parent_session["scenario"]
     difficulty   = max(1, min(5, req.difficulty))
     # Inherit agent_id from parent session if request didn't provide one
-    inherited_agent_id = req.agent_id or sessions[req.session_id].get("agent_id")
+    inherited_agent_id = req.agent_id or parent_session.get("agent_id")
+
+    # Detect the agent's weak areas from the parent session and pass them so
+    # the LLM tailors the new scenario to stress-test those skills.
+    weak_params = _pick_weak_params(parent_session)
+    print(f"[SIMILAR] parent={req.session_id[:8]} weak_params={weak_params}", flush=True)
+
     generated    = _generate_similar_scenario_via_llm(
         old_scenario.get("issue_type", ""),
         old_scenario.get("customer_persona", ""),
+        weak_params=weak_params,
     )
 
     scenario = {
@@ -2482,6 +2637,7 @@ def similar_scenario(req: SimilarScenarioRequest):
         "difficulty":        difficulty,
         "short_description": generated["short_description"],
         "starting_mood":     sessions[sid]["sim"].mood,
+        "targeted_weaknesses": weak_params,   # informational; e.g. ["empathy"]
     }
 
 
@@ -2681,6 +2837,7 @@ def finalize_session(session_id: str):
     if not s["report_persisted"]:
         try:
             report = s["report_gen"].generate(s["turn_log"])
+            s["cached_report"] = report   # used by Practice-Similar weakness detection
             with s["persist_lock"]:
                 if not s["report_persisted"]:
                     sqldb.update_session_report(session_id, report)
