@@ -28,5 +28,21 @@ export const routes: Routes = [
         m => m.SessionReportComponent,
       ),
   },
+  {
+    path: 'upload',
+    canActivate: [authGuard],
+    loadComponent: () =>
+      import('./components/upload-dataset/upload-dataset.component').then(
+        m => m.UploadDatasetComponent,
+      ),
+  },
+  {
+    path: 'upload/:batchId',
+    canActivate: [authGuard],
+    loadComponent: () =>
+      import('./components/upload-dataset/upload-progress.component').then(
+        m => m.UploadProgressComponent,
+      ),
+  },
   { path: '**', redirectTo: 'login' },
 ];

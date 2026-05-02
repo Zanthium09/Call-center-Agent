@@ -1,0 +1,117 @@
+<div class="up-shell">
+  <!-- Top bar -->
+  <nav class="up-nav">
+    <div class="nav-brand">
+      <div class="brand-dot"></div>
+      <span class="brand-name">Tetranetics</span>
+      <span class="brand-divider">|</span>
+      <span class="brand-sub">Upload Conversations</span>
+    </div>
+    <div class="nav-right">
+      <span class="agent-pill">Agent: <strong>{{ agentId }}</strong></span>
+      <button class="btn-nav-ghost" (click)="goBack()">← History</button>
+      <button class="btn-nav" (click)="goChat()">▶ Start Session</button>
+      <button class="btn-nav-ghost" (click)="logout()">Logout</button>
+    </div>
+  </nav>
+
+  <div class="up-body">
+    <div class="up-card">
+      <h1 class="up-title">📤 Upload Past Conversations</h1>
+      <p class="up-sub">
+        Import a dataset of historical agent–customer conversations. Each conversation
+        becomes a session in your history with a full performance report.
+        Scores you supply are kept; missing scores are computed automatically.
+      </p>
+
+      <!-- Format help -->
+      <div class="up-info">
+        <strong>Supported formats:</strong>
+        <code>.json</code> ·
+        <code>.jsonl</code> ·
+        <code>.csv</code> ·
+        <code>.txt</code> ·
+        <code>.zip</code>
+        <br/>
+        <span class="up-cap">Max 10 MB · 500 conversations · 60 turns each</span>
+      </div>
+
+      <!-- Defaults form -->
+      <div class="up-grid">
+        <div class="up-field">
+          <label class="up-label">Default Persona <span class="up-hint">(used when missing)</span></label>
+          <input class="up-input" type="text" [(ngModel)]="defaultPersona" maxlength="80"
+                 [disabled]="loading" placeholder="e.g. Frustrated, Angry, Confused"/>
+        </div>
+        <div class="up-field">
+          <label class="up-label">Default Issue <span class="up-hint">(used when missing)</span></label>
+          <input class="up-input" type="text" [(ngModel)]="defaultIssue" maxlength="80"
+                 [disabled]="loading" placeholder="e.g. Refund, Account Hacked"/>
+        </div>
+      </div>
+
+      <!-- Drag-drop zone -->
+      <label class="up-drop" [class.active]="dragActive" [class.has-file]="selectedFile"
+             (dragover)="onDragOver($event)"
+             (dragleave)="onDragLeave($event)"
+             (drop)="onDrop($event)">
+        <input type="file" [accept]="accepted" (change)="onFilePicked($event)"
+               [disabled]="loading" hidden #fileInput/>
+        <div *ngIf="!selectedFile" class="drop-empty">
+          <div class="drop-icon">⬆️</div>
+          <div class="drop-title">Drop your dataset here</div>
+          <div class="drop-sub">or click to browse — {{ accepted }}</div>
+        </div>
+        <div *ngIf="selectedFile" class="drop-filled">
+          <div class="file-icon">📄</div>
+          <div class="file-meta">
+            <div class="file-name">{{ selectedFile.name }}</div>
+            <div class="file-sub">{{ fileSizeLabel() }} · click to choose another</div>
+          </div>
+        </div>
+      </label>
+
+      <!-- Error -->
+      <div class="up-error" *ngIf="error">{{ error }}</div>
+
+      <!-- Actions -->
+      <div class="up-actions">
+        <button class="btn-secondary" (click)="goBack()" [disabled]="loading">Cancel</button>
+        <button class="btn-primary" (click)="startUpload()"
+                [disabled]="!selectedFile || loading">
+          <span *ngIf="!loading">Start Processing ▶</span>
+          <span *ngIf="loading">Uploading…</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Format examples -->
+    <details class="up-examples">
+      <summary>📖 View example formats</summary>
+      <div class="ex-block">
+        <h4>JSONL (one conversation per line — recommended for large datasets)</h4>
+        <pre>&#123;"id":"call_001","persona":"Frustrated","issue":"Refund","turns":[&#123;"agent":"Hi","customer":"I want my refund"&#125;,&#123;"agent":"On it","customer":"Thanks"&#125;]&#125;
+&#123;"id":"call_002","persona":"Angry","issue":"Late Delivery","turns":[&#123;"agent":"Hello","customer":"Where is my package"&#125;]&#125;</pre>
+      </div>
+      <div class="ex-block">
+        <h4>CSV</h4>
+        <pre>conversation_id,agent,customer,persona,issue
+1,"Hi how can I help","My package is late","Angry","Shipping"
+1,"Let me check that for you","OK","Angry","Shipping"
+2,"Hello","I want a refund","Calm","Billing"</pre>
+      </div>
+      <div class="ex-block">
+        <h4>Plain Text (.txt)</h4>
+        <pre>Agent: Hi, how can I help?
+Customer: My order is late.
+Agent: Let me check that for you.
+Customer: OK, thanks.
+
+===
+
+Agent: Welcome.
+Customer: I have a question.</pre>
+      </div>
+    </details>
+  </div>
+</div>

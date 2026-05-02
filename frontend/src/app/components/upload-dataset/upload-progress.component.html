@@ -1,0 +1,128 @@
+<div class="up-shell">
+  <nav class="up-nav">
+    <div class="nav-brand">
+      <div class="brand-dot"></div>
+      <span class="brand-name">Tetranetics</span>
+      <span class="brand-divider">|</span>
+      <span class="brand-sub">Upload Progress</span>
+    </div>
+    <div class="nav-right">
+      <span class="agent-pill">Agent: <strong>{{ agentId }}</strong></span>
+      <button class="btn-nav-ghost" (click)="goHistory()">📊 History</button>
+      <button class="btn-nav" (click)="goChat()">▶ Start Session</button>
+      <button class="btn-nav-ghost" (click)="logout()">Logout</button>
+    </div>
+  </nav>
+
+  <div class="up-body">
+    <!-- Loading -->
+    <div class="up-state" *ngIf="loading && !batch">
+      <div class="pulse-core"></div>
+      <p>Fetching batch status…</p>
+    </div>
+
+    <!-- Network error -->
+    <div class="up-state error" *ngIf="error && !batch">
+      <p>{{ error }}</p>
+      <button class="btn-secondary" (click)="goHistory()">Back to History</button>
+    </div>
+
+    <ng-container *ngIf="batch">
+      <div class="up-card">
+        <div class="card-head">
+          <div>
+            <div class="card-title">📦 Importing dataset</div>
+            <div class="card-file">{{ batch.filename }} <span class="card-fmt">· {{ batch.format }}</span></div>
+          </div>
+          <span class="state-pill" [class]="'state-' + batch.state">{{ batch.state }}</span>
+        </div>
+
+        <!-- Progress bar -->
+        <div class="prog-row">
+          <div class="prog-track">
+            <div class="prog-fill" [style.width.%]="percent()"></div>
+          </div>
+          <span class="prog-num">{{ percent() }}%</span>
+        </div>
+
+        <!-- Stats -->
+        <div class="stats-row">
+          <div class="stat">
+            <span class="stat-num">{{ batch.processed }}</span>
+            <span class="stat-lbl">Done</span>
+          </div>
+          <div class="stat">
+            <span class="stat-num" style="color:#EF4444">{{ batch.failed }}</span>
+            <span class="stat-lbl">Failed</span>
+          </div>
+          <div class="stat">
+            <span class="stat-num">{{ batch.total }}</span>
+            <span class="stat-lbl">Total</span>
+          </div>
+          <div class="stat" *ngIf="batch.state === 'running'">
+            <span class="stat-num">{{ etaLabel() }}</span>
+            <span class="stat-lbl">ETA</span>
+          </div>
+        </div>
+
+        <!-- Live status -->
+        <div class="live-status" *ngIf="batch.state === 'running' && batch.live?.current_conv">
+          <strong>Currently processing:</strong>
+          <span class="live-id">{{ batch.live.current_conv }}</span>
+          <span class="live-meta">
+            #{{ batch.live.current_conv_idx }} of {{ batch.total }} ·
+            {{ batch.live.current_persona }} · {{ batch.live.current_issue }} ·
+            {{ batch.live.current_turns }} turns
+          </span>
+        </div>
+
+        <!-- Closing hint -->
+        <div class="hint" *ngIf="batch.state === 'running'">
+          💡 You can close this tab — processing continues in the background.
+          Visit <a (click)="goHistory()">History</a> later to see your sessions.
+        </div>
+
+        <!-- Final states -->
+        <div class="finish-row" *ngIf="batch.state === 'done'">
+          ✅ Imported {{ batch.processed }} session<span *ngIf="batch.processed !== 1">s</span>
+          <span *ngIf="batch.failed">— {{ batch.failed }} failed (see below)</span>
+        </div>
+        <div class="finish-row error-msg" *ngIf="batch.state === 'error'">
+          ❌ {{ batch.error_message || 'Something went wrong.' }}
+        </div>
+        <div class="finish-row" *ngIf="batch.state === 'cancelled'">
+          ⏹ Cancelled at {{ batch.processed }} of {{ batch.total }}.
+          Already-processed sessions are saved.
+        </div>
+
+        <!-- Actions -->
+        <div class="actions-row">
+          <button *ngIf="batch.state === 'running' || batch.state === 'pending'"
+                  class="btn-cancel" (click)="cancel()" [disabled]="cancelling">
+            {{ cancelling ? 'Cancelling…' : '⏹ Cancel' }}
+          </button>
+          <button *ngIf="batch.state === 'done' || batch.state === 'cancelled'"
+                  class="btn-primary" (click)="goHistory()">📊 View in History</button>
+          <button *ngIf="batch.state === 'error'"
+                  class="btn-secondary" (click)="goUpload()">Try another file</button>
+        </div>
+      </div>
+
+      <!-- Failures list -->
+      <div class="up-card failures" *ngIf="batch.failures && batch.failures.length > 0">
+        <h3>⚠️ Failed conversations ({{ batch.failures.length }})</h3>
+        <table class="fail-table">
+          <thead>
+            <tr><th>ID</th><th>Reason</th></tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let f of batch.failures">
+              <td><code>{{ f.id }}</code></td>
+              <td>{{ f.reason }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </ng-container>
+  </div>
+</div>
