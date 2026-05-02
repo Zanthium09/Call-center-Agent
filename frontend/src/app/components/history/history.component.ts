@@ -8,6 +8,7 @@ import { BaseChartDirective } from 'ng2-charts';
 import type { ChartConfiguration, ChartData, ChartType } from 'chart.js';
 import { AuthService } from '../../services/auth.service';
 import { HistoryService, SessionSummary } from '../../services/history.service';
+import { UploadService, BatchSummary, AgentSummary } from '../../services/upload.service';
 
 @Component({
   selector: 'app-history',
@@ -21,6 +22,9 @@ export class HistoryComponent implements OnInit {
   loading = true;
   error = '';
   sessions: SessionSummary[] = [];
+  batches: BatchSummary[] = [];
+  summary: AgentSummary | null = null;
+  deletingBatchId: string | null = null;
 
   // ── Chart 1: average score per session over time ──
   avgChartData: ChartData<'line'> = { labels: [], datasets: [] };
@@ -62,6 +66,7 @@ export class HistoryComponent implements OnInit {
     private auth: AuthService,
     private history: HistoryService,
     private router: Router,
+    private upload: UploadService,
     private zone: NgZone,
     private cdr: ChangeDetectorRef,
   ) {}
@@ -94,6 +99,67 @@ export class HistoryComponent implements OnInit {
         this.zone.run(() => {
           this.error = e?.error?.detail || `Failed to load history (${e?.status ?? 'network'}).`;
           this.loading = false;
+          this.cdr.detectChanges();
+        });
+      },
+    });
+
+    // Career snapshot + batch list (best-effort; errors don't block history)
+    this.upload.getAgentSummary(this.agentId).subscribe({
+      next: (s) => this.zone.run(() => { this.summary = s; this.cdr.detectChanges(); }),
+      error: () => {/* ignore */},
+    });
+    this.upload.listBatches(this.agentId).subscribe({
+      next: (r) => this.zone.run(() => {
+        this.batches = r.batches || [];
+        this.cdr.detectChanges();
+      }),
+      error: () => {/* ignore */},
+    });
+  }
+
+  // Career-snapshot helpers
+  paramLabel(key: string): string {
+    return ({
+      professionalism: '👔 Professionalism',
+      customer_satisfaction: '😊 Customer Satisfaction',
+      problem_resolution: '🛠️ Problem Resolution',
+      empathy: '❤️ Empathy',
+      communication_clarity: '💬 Communication Clarity',
+    } as any)[key] || key;
+  }
+  paramKeys(): string[] {
+    return ['professionalism', 'customer_satisfaction', 'problem_resolution',
+            'empathy', 'communication_clarity'];
+  }
+  paramValue(key: string): number | null {
+    if (!this.summary) return null;
+    return (this.summary.lifetime_param_avgs as any)[key] ?? null;
+  }
+  paramFillClass(v: number | null): string {
+    if (v === null || v === undefined) return 'low';
+    if (v >= 7) return 'high';
+    if (v >= 4) return 'mid';
+    return 'low';
+  }
+
+  goUpload() { this.router.navigate(['/upload']); }
+  goBatch(batchId: string) { this.router.navigate(['/upload', batchId]); }
+
+  deleteBatch(batchId: string) {
+    if (!confirm('Delete this batch and all its sessions? This cannot be undone.')) return;
+    this.deletingBatchId = batchId;
+    this.upload.deleteBatch(batchId, this.agentId).subscribe({
+      next: () => {
+        this.zone.run(() => {
+          this.deletingBatchId = null;
+          this._load();   // reload everything
+        });
+      },
+      error: (e) => {
+        this.zone.run(() => {
+          this.deletingBatchId = null;
+          alert(e?.error?.detail || 'Delete failed');
           this.cdr.detectChanges();
         });
       },

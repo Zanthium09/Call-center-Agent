@@ -2,7 +2,7 @@
 // FILE PATH: src/app/components/upload-dataset/upload-progress.component.ts
 // ============================================================
 import { Component, OnInit, OnDestroy, NgZone, ChangeDetectorRef } from '@angular/core';
-import { CommonModule, DatePipe } from '@angular/common';
+import { CommonModule } from '@angular/common';
 import { ActivatedRoute, Router } from '@angular/router';
 import { AuthService } from '../../services/auth.service';
 import { UploadService, BatchDetail } from '../../services/upload.service';
@@ -10,7 +10,7 @@ import { UploadService, BatchDetail } from '../../services/upload.service';
 @Component({
   selector: 'app-upload-progress',
   standalone: true,
-  imports: [CommonModule, DatePipe],
+  imports: [CommonModule],
   templateUrl: './upload-progress.component.html',
   styleUrls: ['./upload-progress.component.scss'],
 })

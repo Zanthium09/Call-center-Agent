@@ -333,3 +333,236 @@ $amber:       #F59E0B;
     border-color: $green;
   }
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+   CAREER SNAPSHOT — pinned section above the charts
+   ────────────────────────────────────────────────────────────────────────── */
+.career-snapshot {
+  padding: 24px 24px 0;
+}
+
+.cs-card {
+  background: linear-gradient(135deg, $white 0%, #FBFEFC 100%);
+  border: 1px solid $border;
+  border-radius: 14px;
+  padding: 22px 24px;
+  box-shadow: 0 2px 8px rgba(11, 17, 32, 0.04);
+}
+
+.cs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+  h3 {
+    font-size: 15px;
+    color: $navy;
+    font-weight: 700;
+  }
+}
+.cs-meta {
+  font-size: 12px;
+  color: $text-muted;
+  background: $green-light;
+  border: 1px solid rgba(61, 190, 110, 0.2);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.cs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.cs-tile {
+  background: $bg;
+  border: 1px solid $border;
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+}
+.cs-num {
+  font-size: 18px;
+  font-weight: 700;
+  color: $navy;
+  line-height: 1.1;
+  text-transform: capitalize;
+  word-break: break-word;
+}
+.cs-lbl {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: $text-muted;
+  margin-top: 4px;
+  font-weight: 600;
+}
+
+/* Param bars in the snapshot card */
+.cs-params {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px solid $border;
+}
+.cs-param-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.cs-param-lbl {
+  flex: 0 0 200px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: $navy-mid;
+}
+.cs-param-track {
+  flex: 1;
+  height: 8px;
+  background: $border;
+  border-radius: 999px;
+  overflow: hidden;
+  min-width: 100px;
+}
+.cs-param-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.6s ease;
+  &.high { background: $green; }
+  &.mid  { background: $amber; }
+  &.low  { background: $red; }
+}
+.cs-param-num {
+  font-size: 11.5px;
+  font-weight: 700;
+  min-width: 50px;
+  text-align: right;
+  &.high { color: $green-dark; }
+  &.mid  { color: $amber; }
+  &.low  { color: $red; }
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   IMPORTED DATASETS LIST
+   ────────────────────────────────────────────────────────────────────────── */
+.batches-section { padding: 16px 24px 0; }
+
+.bx-card {
+  background: $white;
+  border: 1px solid $border;
+  border-radius: 12px;
+  padding: 18px 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  overflow-x: auto;
+  h3 {
+    margin-bottom: 12px;
+    font-size: 15px;
+    color: $navy;
+    font-weight: 700;
+  }
+}
+
+.bx-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid #F1F5F9;
+  }
+  th {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: $text-muted;
+    font-weight: 700;
+    background: #FAFBFC;
+  }
+  tbody tr {
+    transition: background 0.12s;
+    &:hover { background: $green-light; }
+  }
+}
+
+.bx-file {
+  font-weight: 600;
+  color: $navy;
+  word-break: break-all;
+  max-width: 280px;
+}
+
+.fmt-pill {
+  background: $green-light;
+  color: $green-dark;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.bx-fail {
+  color: $red;
+  font-size: 11px;
+  margin-left: 4px;
+}
+
+.bx-state {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  &.bx-pending  { background: rgba(245, 158, 11, 0.15); color: #92400E; }
+  &.bx-running  { background: $green-light; color: $green-dark; }
+  &.bx-done     { background: $green-light; color: $green-dark; }
+  &.bx-error    { background: #FEF2F2;       color: #991B1B; }
+  &.bx-cancelled{ background: #F1F5F9;       color: $text-muted; }
+}
+
+.bx-actions { display: flex; gap: 6px; }
+
+.btn-bx {
+  background: $white;
+  color: $green-dark;
+  border: 1.5px solid $border;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.12s;
+  &:hover {
+    background: $green-light;
+    border-color: $green;
+  }
+}
+.btn-bx-del {
+  background: $white;
+  color: $red;
+  border: 1.5px solid $border;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.12s;
+  &:hover:not(:disabled) {
+    background: #FEF2F2;
+    border-color: $red;
+  }
+  &:disabled { opacity: 0.5; cursor: not-allowed; }
+}

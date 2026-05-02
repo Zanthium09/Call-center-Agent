@@ -9,10 +9,108 @@
     </div>
     <div class="nav-right">
       <span class="agent-pill">Agent: <strong>{{ agentId }}</strong></span>
+      <button class="btn-nav-ghost" (click)="goUpload()">📤 Upload Dataset</button>
       <button class="btn-nav" (click)="goChat()">▶ Start Session</button>
       <button class="btn-nav-ghost" (click)="goLogin()">Logout</button>
     </div>
   </nav>
+
+  <!-- Career snapshot -->
+  <div class="career-snapshot" *ngIf="summary && summary.total_sessions > 0">
+    <div class="cs-card">
+      <div class="cs-head">
+        <h3>📈 Career Snapshot</h3>
+        <span class="cs-meta">
+          {{ summary.total_sessions }} session<span *ngIf="summary.total_sessions !== 1">s</span>
+          <span *ngIf="summary.uploaded_sessions > 0">
+            ({{ summary.live_sessions }} live, {{ summary.uploaded_sessions }} imported)
+          </span>
+        </span>
+      </div>
+      <div class="cs-grid">
+        <div class="cs-tile">
+          <span class="cs-num">{{ summary.lifetime_avg ?? '—' }}</span>
+          <span class="cs-lbl">Lifetime Avg</span>
+        </div>
+        <div class="cs-tile">
+          <span class="cs-num" style="color:#3DBE6E">{{ summary.wins }}</span>
+          <span class="cs-lbl">Wins</span>
+        </div>
+        <div class="cs-tile">
+          <span class="cs-num" style="color:#EF4444">{{ summary.losses }}</span>
+          <span class="cs-lbl">Losses</span>
+        </div>
+        <div class="cs-tile">
+          <span class="cs-num">
+            {{ summary.win_rate !== null ? ((summary.win_rate * 100) | number:'1.0-0') + '%' : '—' }}
+          </span>
+          <span class="cs-lbl">Win Rate</span>
+        </div>
+        <div class="cs-tile">
+          <span class="cs-num" style="color:#3DBE6E">
+            {{ summary.strongest_skill ? summary.strongest_skill.replace('_',' ') : '—' }}
+          </span>
+          <span class="cs-lbl">Strongest</span>
+        </div>
+        <div class="cs-tile">
+          <span class="cs-num" style="color:#EF4444">
+            {{ summary.weakest_skill ? summary.weakest_skill.replace('_',' ') : '—' }}
+          </span>
+          <span class="cs-lbl">Weakest</span>
+        </div>
+      </div>
+
+      <!-- Param bars -->
+      <div class="cs-params">
+        <div class="cs-param-row" *ngFor="let k of paramKeys()">
+          <span class="cs-param-lbl">{{ paramLabel(k) }}</span>
+          <div class="cs-param-track">
+            <div class="cs-param-fill" [class]="paramFillClass(paramValue(k))"
+                 [style.width.%]="(paramValue(k) ?? 0) * 10"></div>
+          </div>
+          <span class="cs-param-num" [class]="paramFillClass(paramValue(k))">
+            {{ paramValue(k) !== null ? paramValue(k) : '—' }}<span *ngIf="paramValue(k) !== null">/10</span>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Imported datasets list -->
+  <div class="batches-section" *ngIf="batches && batches.length > 0">
+    <div class="bx-card">
+      <h3>📦 Imported Datasets</h3>
+      <table class="bx-table">
+        <thead>
+          <tr>
+            <th>File</th><th>Format</th><th>Conversations</th>
+            <th>State</th><th>Imported</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let b of batches">
+            <td class="bx-file">{{ b.filename }}</td>
+            <td><span class="fmt-pill">{{ b.format }}</span></td>
+            <td>
+              <span [style.color]="b.failed ? '#EF4444' : null">{{ b.processed }}</span> /
+              {{ b.total }}
+              <span *ngIf="b.failed" class="bx-fail">({{ b.failed }} failed)</span>
+            </td>
+            <td><span class="bx-state" [class]="'bx-' + b.state">{{ b.state }}</span></td>
+            <td>{{ b.started_at ? (b.started_at | date:'MMM d, HH:mm') : '—' }}</td>
+            <td class="bx-actions">
+              <button class="btn-bx" (click)="goBatch(b.batch_id)" title="View progress">View</button>
+              <button class="btn-bx-del" (click)="deleteBatch(b.batch_id)"
+                      [disabled]="deletingBatchId === b.batch_id"
+                      title="Delete this batch and its sessions">
+                {{ deletingBatchId === b.batch_id ? '…' : '🗑' }}
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
 
   <!-- Loading -->
   <div class="state-block" *ngIf="loading">
@@ -29,7 +127,8 @@
   <div class="state-block empty" *ngIf="!loading && !error && sessions.length === 0">
     <div class="empty-icon">📭</div>
     <h2>No sessions yet</h2>
-    <p>Run a session and your stats will appear here. Click <em>Start Session</em> above.</p>
+    <p>Run a session and your stats will appear here. Click <em>Start Session</em> above,
+       or <em>Upload Dataset</em> to import past conversations.</p>
   </div>
 
   <!-- Content -->
