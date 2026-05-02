@@ -26,11 +26,12 @@
 #  [FIX-14] Reason fallback is score-range-specific, not generic
 # ==============================================================================
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
+import upload_parser as uparse
 import uuid, json, random, re, os, threading, asyncio, requests as _http
 
 import db as sqldb  # SQLite persistence (separate from the in-memory ScenarioDB instance below)
@@ -2846,3 +2847,259 @@ def finalize_session(session_id: str):
             print(f"[FINALIZE] report generation failed: {e}", flush=True)
 
     return {"status": "finalized", "session_id": session_id, "outcome": outcome}
+
+
+# ==============================================================================
+#  BULK CONVERSATION UPLOAD
+#  ─ Lets an agent import historical conversations (jsonl/json/csv/txt/zip)
+#  ─ Each conversation becomes a session row, scored retroactively if needed
+#  ─ Processed in a background thread; frontend polls /upload-batch/{id}
+# ==============================================================================
+
+# In-memory per-batch progress detail (current conversation + turn being scored)
+_upload_progress: dict = {}
+
+
+def _score_uploaded_turns(conv: dict) -> list:
+    """Score every turn that's missing a 'score' using the existing live scorer.
+    Builds a turn_log with the same shape as live sessions."""
+    issue = conv.get("issue") or "General Inquiry"
+    turn_log = []
+    for i, t in enumerate(conv.get("turns") or [], start=1):
+        agent_text = (t.get("agent") or "").strip()
+        cust_text  = (t.get("customer") or "").strip()
+        prev_cust  = (conv["turns"][i - 2].get("customer", "")
+                      if i >= 2 else "(start of conversation)")
+
+        # Honour user-supplied score; otherwise compute via existing scorer
+        if "score" in t and isinstance(t["score"], int):
+            score, tip, reason = t["score"], t.get("tip", ""), ""
+        elif agent_text:
+            try:
+                score, tip, reason = score_and_tip(agent_text, prev_cust, issue)
+            except Exception as e:
+                print(f"[UPLOAD] score failed: {e}", flush=True)
+                score, tip, reason = 5, "", ""
+        else:
+            score, tip, reason = 5, "", ""
+
+        turn_log.append({
+            "turn":     i,
+            "agent":    agent_text,
+            "customer": cust_text,
+            "score":    score,
+            "tip":      tip,
+            "reason":   reason,
+            "ideal":    "",
+        })
+    return turn_log
+
+
+def _detect_outcome_from_log(turn_log: list, supplied: Optional[str]) -> str:
+    if supplied in ("win", "loss"):
+        return supplied
+    if not turn_log:
+        return "loss"
+    last = turn_log[-1].get("score", 0)
+    avg_tail = sum(t["score"] for t in turn_log[-3:]) / max(1, len(turn_log[-3:]))
+    return "win" if (last >= 8 or avg_tail >= 7) else "loss"
+
+
+def _process_upload_batch(batch_id: str, agent_id: str, raw_bytes: bytes,
+                          filename: str, default_persona: str,
+                          default_issue: str) -> None:
+    """Background worker: parses, scores, generates reports, persists.
+    Updates DB progress so frontend can poll. Honours cancellation."""
+    print(f"[UPLOAD] batch={batch_id[:8]} starting…", flush=True)
+
+    try:
+        convos, fmt, warnings = uparse.parse_dataset(
+            raw_bytes, filename, default_persona, default_issue,
+        )
+    except Exception as e:
+        sqldb.update_batch_progress(
+            batch_id, state="error",
+            error_message=f"Parse failed: {e}", finished=True,
+        )
+        print(f"[UPLOAD] parse error: {e}", flush=True)
+        return
+
+    if not convos:
+        sqldb.update_batch_progress(
+            batch_id, state="error",
+            error_message="No valid conversations found in the file.",
+            finished=True,
+        )
+        return
+
+    # Update total now that we've parsed
+    sqldb.update_batch_progress(
+        batch_id, state="running",
+        # processed/failed remain 0 at this point
+    )
+    with sqldb._get_conn() as c:
+        c.execute(
+            "UPDATE upload_batches SET total = ?, format = ? WHERE batch_id = ?",
+            (len(convos), fmt, batch_id),
+        )
+
+    processed = 0
+    failed = 0
+    failures: list = []
+
+    for idx, conv in enumerate(convos, start=1):
+        if sqldb.is_batch_cancelled(batch_id):
+            sqldb.update_batch_progress(
+                batch_id, state="cancelled",
+                processed=processed, failed=failed,
+                failures_json=json.dumps(failures),
+                finished=True,
+            )
+            print(f"[UPLOAD] batch={batch_id[:8]} cancelled at {idx}/{len(convos)}",
+                  flush=True)
+            return
+
+        _upload_progress[batch_id] = {
+            "current_conv":      conv["id"],
+            "current_conv_idx":  idx,
+            "current_persona":   conv["persona"],
+            "current_issue":     conv["issue"],
+            "current_turns":     len(conv["turns"]),
+        }
+
+        try:
+            turn_log = _score_uploaded_turns(conv)
+            if not turn_log:
+                failed += 1
+                failures.append({"id": conv["id"], "reason": "no valid turns"})
+                continue
+
+            outcome = _detect_outcome_from_log(turn_log, conv.get("outcome"))
+            scenario = {
+                "customer_persona": conv["persona"],
+                "issue_type":       conv["issue"],
+                "difficulty":       1,
+            }
+
+            new_session_id = str(uuid.uuid4())
+            sqldb.insert_uploaded_session(
+                new_session_id, agent_id, batch_id, scenario,
+                outcome, turn_log, started_at=conv.get("date"),
+            )
+
+            # Generate the LLM-derived 5-param report and upgrade the row
+            try:
+                report = ReportGen(scenario).generate(turn_log)
+                sqldb.update_session_report(new_session_id, report)
+            except Exception as e:
+                print(f"[UPLOAD] report gen failed for {conv['id']}: {e}",
+                      flush=True)
+
+            processed += 1
+
+        except Exception as e:
+            failed += 1
+            failures.append({"id": conv.get("id", f"#{idx}"),
+                             "reason": str(e)[:200]})
+            print(f"[UPLOAD] error on conv {conv.get('id')}: {e}", flush=True)
+
+        # Persist progress every conversation
+        sqldb.update_batch_progress(
+            batch_id, processed=processed, failed=failed,
+            failures_json=json.dumps(failures),
+        )
+
+    sqldb.update_batch_progress(
+        batch_id, state="done", processed=processed, failed=failed,
+        failures_json=json.dumps(failures), finished=True,
+    )
+    _upload_progress.pop(batch_id, None)
+    print(f"[UPLOAD] batch={batch_id[:8]} done: {processed} ok, {failed} failed",
+          flush=True)
+
+
+@app.post("/upload-dataset")
+async def upload_dataset(
+    file: UploadFile = File(...),
+    agent_id: str = Form(...),
+    default_persona: str = Form(uparse.DEFAULT_PERSONA),
+    default_issue: str = Form(uparse.DEFAULT_ISSUE),
+):
+    """Accept an uploaded conversation dataset and start a background job.
+    Returns immediately with the batch_id; frontend polls progress."""
+    aid = sqldb.normalize_agent_id(agent_id)
+    if not aid:
+        raise HTTPException(status_code=400, detail="agent_id is required")
+
+    # Make sure the agent exists (auto-create — same honour-system as login)
+    sqldb.ensure_agent(aid)
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    if len(raw) > 10 * 1024 * 1024:  # 10MB cap
+        raise HTTPException(status_code=400, detail="File too large (max 10MB).")
+
+    batch_id = str(uuid.uuid4())
+    sqldb.create_upload_batch(
+        batch_id=batch_id, agent_id=aid,
+        filename=file.filename or "dataset",
+        fmt="(detecting)", total=0,
+    )
+
+    # Spawn the worker thread
+    threading.Thread(
+        target=_process_upload_batch,
+        args=(batch_id, aid, raw, file.filename or "dataset",
+              default_persona, default_issue),
+        daemon=True,
+    ).start()
+
+    return {"batch_id": batch_id, "state": "pending"}
+
+
+@app.get("/upload-batch/{batch_id}")
+def get_upload_batch(batch_id: str):
+    row = sqldb.get_batch(batch_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Batch not found.")
+    out = dict(row)
+    try:
+        out["failures"] = json.loads(out.get("failures_json") or "[]")
+    except Exception:
+        out["failures"] = []
+    out["live"] = _upload_progress.get(batch_id, {})  # fine-grained progress
+    return out
+
+
+@app.post("/upload-batch/{batch_id}/cancel")
+def cancel_upload_batch(batch_id: str):
+    if not sqldb.get_batch(batch_id):
+        raise HTTPException(status_code=404, detail="Batch not found.")
+    sqldb.mark_batch_cancelled(batch_id)
+    return {"status": "cancellation_requested"}
+
+
+@app.delete("/upload-batch/{batch_id}")
+def delete_upload_batch(batch_id: str, agent_id: str):
+    aid = sqldb.normalize_agent_id(agent_id)
+    if not aid:
+        raise HTTPException(status_code=400, detail="agent_id is required")
+    deleted = sqldb.delete_batch(batch_id, aid)
+    return {"status": "deleted", "sessions_removed": deleted}
+
+
+@app.get("/upload-batches/{agent_id}")
+def list_upload_batches(agent_id: str):
+    aid = sqldb.normalize_agent_id(agent_id)
+    if not aid:
+        raise HTTPException(status_code=400, detail="agent_id is required")
+    return {"agent_id": aid, "batches": sqldb.list_batches(aid)}
+
+
+@app.get("/agent-summary/{agent_id}")
+def get_agent_summary(agent_id: str):
+    aid = sqldb.normalize_agent_id(agent_id)
+    if not aid:
+        raise HTTPException(status_code=400, detail="agent_id is required")
+    return sqldb.get_agent_summary(aid)
